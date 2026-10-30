@@ -26,7 +26,7 @@ ifeq ($(KERNEL_BUILD), 0)
 		export
 		INCS    +=  -include $(AUDIO_ROOT)/config/sm6150autoconf.h
 	endif
-	ifeq ($(CONFIG_ARCH_KHAJE), y)
+	ifeq ($(CONFIG_ARCH_BENGAL), y)
 		include $(AUDIO_ROOT)/config/bengalauto.conf
 		export
 		INCS    +=  -include $(AUDIO_ROOT)/config/bengalautoconf.h
@@ -40,13 +40,9 @@ ifeq ($(KERNEL_BUILD), 0)
 		include $(AUDIO_ROOT)/config/waipioauto.conf
 		INCS    +=  -include $(AUDIO_ROOT)/config/waipioautoconf.h
 	endif
-	ifeq ($(CONFIG_ARCH_HOLI), y)
-		include $(AUDIO_ROOT)/config/holiauto.conf
-		INCS    +=  -include $(AUDIO_ROOT)/config/holiautoconf.h
-	endif
-	ifeq ($(CONFIG_ARCH_BLAIR), y)
-		include $(AUDIO_ROOT)/config/holiauto.conf
-		INCS    +=  -include $(AUDIO_ROOT)/config/holiautoconf.h
+	ifeq ($(CONFIG_ARCH_PARROT), y)
+		include $(AUDIO_ROOT)/config/waipioauto.conf
+		INCS    +=  -include $(AUDIO_ROOT)/config/waipioautoconf.h
 	endif
 endif
 
