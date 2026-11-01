@@ -17,6 +17,9 @@
 #define CAM_SENSOR_PIPELINE_DELAY_MASK        0xFF
 #define CAM_SENSOR_MODESWITCH_DELAY_SHIFT     8
 #define CAM_SENSOR_MAX_PER_REQ_SETTINGS       4
+#ifndef CAM_OEM_GET_ID
+#define CAM_OEM_GET_ID                        0x8006
+#endif
 
 extern struct completion *cam_sensor_get_i3c_completion(uint32_t index);
 
@@ -1797,6 +1800,14 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 				s_ctrl->stream_off_on_flush = false;
 		}
 	}
+		break;
+	case CAM_OEM_GET_ID:
+		if (copy_to_user(u64_to_user_ptr(cmd->handle),
+			&s_ctrl->soc_info.index, sizeof(uint32_t))) {
+			CAM_ERR(CAM_SENSOR, "Failed Copy to User");
+			rc = -EFAULT;
+			goto release_mutex;
+		}
 		break;
 	default:
 		CAM_ERR(CAM_SENSOR, "%s: Invalid Opcode: %d",
