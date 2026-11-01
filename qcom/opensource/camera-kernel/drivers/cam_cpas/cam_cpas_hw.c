@@ -3885,7 +3885,8 @@ static void *cam_cpas_user_dump_state_monitor_array_info(
 	*addr++ = monitor->applied_camnoc_clk.hw_client[2].low,
 	*addr++ = monitor->applied_ahb_level;
 	*addr++ = cpas_core->num_valid_camnoc;
-	*addr++ = soc_private->smart_qos_info->num_rt_wr_nius;
+	*addr++ = soc_private->smart_qos_info ?
+		soc_private->smart_qos_info->num_rt_wr_nius : 0;
 	*addr++ = num_vcds;
 	*addr++ = cpas_core->num_axi_ports;
 
@@ -3932,7 +3933,8 @@ static void *cam_cpas_user_dump_state_monitor_array_info(
 		}
 	}
 
-	for (i = 0; i < soc_private->smart_qos_info->num_rt_wr_nius; i++) {
+	for (i = 0; soc_private->smart_qos_info &&
+		i < soc_private->smart_qos_info->num_rt_wr_nius; i++) {
 		niu_node = soc_private->smart_qos_info->rt_wr_niu_node[i];
 		dst = (uint8_t *)addr;
 		hdr = (struct cam_common_hw_dump_header *)dst;
@@ -4030,7 +4032,8 @@ static int cam_cpas_dump_state_monitor_array_info(
 				min_len += sizeof(struct cam_common_hw_dump_header);
 		}
 
-		for (j = 0; j < soc_private->smart_qos_info->num_rt_wr_nius; j++)
+		for (j = 0; soc_private->smart_qos_info &&
+			j < soc_private->smart_qos_info->num_rt_wr_nius; j++)
 			min_len += sizeof(struct cam_common_hw_dump_header) +
 				CAM_CPAS_DUMP_NUM_WORDS_RT_WR_NIUS * sizeof(uint64_t);
 
