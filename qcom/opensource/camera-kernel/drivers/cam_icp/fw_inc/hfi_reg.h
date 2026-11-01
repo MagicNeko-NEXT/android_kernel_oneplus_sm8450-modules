@@ -41,8 +41,8 @@
 #define ICP_QHDR_Q_ID_MASK                      0x000000FF
 #define ICP_QTBL_SIZE_IN_BYTES                  sizeof(struct hfi_qtbl)
 
-#define ICP_CMD_Q_SIZE_IN_BYTES                 8192
-#define ICP_MSG_Q_SIZE_IN_BYTES                 8192
+#define ICP_CMD_Q_SIZE_IN_BYTES                 4096
+#define ICP_MSG_Q_SIZE_IN_BYTES                 4096
 #define ICP_DBG_Q_SIZE_IN_BYTES                 102400
 #define ICP_MSG_SFR_SIZE_IN_BYTES               4096
 #define ICP_SEC_HEAP_SIZE_IN_BYTES              1048576

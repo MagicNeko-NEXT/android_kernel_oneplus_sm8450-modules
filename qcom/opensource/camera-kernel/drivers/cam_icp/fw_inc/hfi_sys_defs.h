@@ -376,7 +376,6 @@ struct hfi_cmd_ubwc_cfg {
 struct hfi_cmd_ubwc_cfg_ext {
 	struct hfi_cmd_ubwc_cfg bps;
 	struct hfi_cmd_ubwc_cfg ipe;
-	struct hfi_cmd_ubwc_cfg ofe;
 } __packed;
 
 /**

@@ -493,8 +493,6 @@ int hfi_cmd_ubwc_config_ext(int client_handle, uint32_t *ubwc_ipe_cfg,
 	prop_ref_data[2] = ubwc_bps_cfg[1];
 	prop_ref_data[3] = ubwc_ipe_cfg[0];
 	prop_ref_data[4] = ubwc_ipe_cfg[1];
-	prop_ref_data[5] = ubwc_ofe_cfg[0];
-	prop_ref_data[6] = ubwc_ofe_cfg[1];
 	hfi_write_cmd(client_handle, prop);
 	CAM_MEM_FREE(prop);
 
@@ -590,11 +588,6 @@ int hfi_set_fw_dump_levels(int client_handle, uint32_t hang_dump_lvl,
 	/* Write hang dump level */
 	hfi_write_cmd(client_handle, prop);
 
-	/* Update and write ramdump level */
-	prop_ref_data[0] = HFI_PROP_SYS_ICP_RAMDUMP_MODE;
-	prop_ref_data[1] = ram_dump_lvl;
-
-	hfi_write_cmd(client_handle, prop);
 	CAM_DBG(CAM_HFI,
 		"[%s] hfi hdl: %d prop->size = %d prop->pkt_type = %d prop->num_prop = %d hang_dump_lvl = %u ram_dump_lvl = %u",
 		hfi->client_name, client_handle, fw_dump_level_switch_prop->size,
