@@ -26,7 +26,7 @@
 #define CAM_ISP_HW_CSID_LITE                    6
 #define CAM_ISP_HW_SFE                          7
 #define CAM_ISP_HW_MC_TFE                       8
-#define CAM_ISP_HW_MAX                          9
+#define CAM_ISP_HW_MAX                          8
 
 /* Color Pattern */
 #define CAM_ISP_PATTERN_BAYER_RGRGRG            0
