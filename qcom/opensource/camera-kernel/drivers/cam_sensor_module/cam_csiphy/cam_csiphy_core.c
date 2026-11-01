@@ -3102,7 +3102,8 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 			goto cpas_stop;
 		}
 
-		if (cam_common_read_poll_timeout(csiphybase +
+		if (status_reg_ptr->refgen_status_offset &&
+			cam_common_read_poll_timeout(csiphybase +
 			status_reg_ptr->refgen_status_offset,
 			CSIPHY_POLL_DELAY_US, CSIPHY_POLL_TIMEOUT_US,
 			CSPIHY_REFGEN_STATUS_BIT, CSPIHY_REFGEN_STATUS_BIT, &refgen_status)) {
