@@ -170,7 +170,7 @@ int actuator_power_down_thread(void *arg)
 						CAM_ERR(CAM_ACTUATOR,"read failed ret : %d", rc);
 						goto err_handle;
 					}
-					CAM_INFO(CAM_ACTUATOR,"read DW9718P_BUSY_ADDR data : %d busy_count ：%d", is_actuator_busy ,busy_count);
+					CAM_INFO(CAM_ACTUATOR,"read DW9718P_BUSY_ADDR data : %d busy_count : %d", is_actuator_busy ,busy_count);
 					if(is_actuator_busy == 0) {
 						break;
 					}
@@ -444,7 +444,7 @@ int actuator_power_up_parklens_thread(void *arg)
 						CAM_ERR(CAM_ACTUATOR,"read failed ret : %d", rc);
 						return rc;
 					}
-					CAM_INFO(CAM_ACTUATOR,"read DW9718P_BUSY_ADDR data : %d busy_count ：%d", is_actuator_busy ,busy_count);
+					CAM_INFO(CAM_ACTUATOR,"read DW9718P_BUSY_ADDR data : %d busy_count : %d", is_actuator_busy ,busy_count);
 					if(is_actuator_busy == 0) {
 						break;
 					}

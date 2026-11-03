@@ -2400,26 +2400,26 @@ inline bool oplus_is_support_pwm_switch(struct dsi_panel *panel)
 
 /*
 int oplus_panel_send_pwm_turbo_dcs_unlock(struct dsi_panel *panel, bool enabled)
-60Hz开启高频PWM：	60HZ低频--120HZ低频--avdd/gamma/elvss/pulse--120HZ高频--60HZ高频
-	qcom,mdss-dsi-timing-switch-120-command			(60Hz切120Hz低频)
+60Hz enable high-frequency PWM:	60Hz low--120Hz low--avdd/gamma/elvss/pulse--120Hz high--60Hz high
+	qcom,mdss-dsi-timing-switch-120-command			(60Hz to 120Hz low frequency)
 	qcom,mdss-dsi-switch-avdd-command
 	qcom,mdss-dsi-switch-high-fre-120-command
-	qcom,mdss-dsi-timing-switch-120-high-fre-command	(60Hz切120Hz高频)
+	qcom,mdss-dsi-timing-switch-120-high-fre-command	(60Hz to 120Hz high frequency)
 	qcom,mdss-dsi-timing-switch-high-fre-command
 
-120Hz开启高频PWM:	120HZ低频--avdd/gamma/elvss/pulse--120HZ高频
+120Hz enable high-frequency PWM:	120Hz low--avdd/gamma/elvss/pulse--120Hz high
 	qcom,mdss-dsi-switch-avdd-command
 	qcom,mdss-dsi-switch-high-fre-120-command
 	qcom,mdss-dsi-timing-switch-high-fre-command
 
-60Hz关闭高频PWM：	60HZ高频--120HZ高频--avdd/gamma/elvss/pulse--120HZ低频--60HZ低频
-	qcom,mdss-dsi-timing-switch-120-high-fre-command	(60Hz切120Hz高频)
+60Hz disable high-frequency PWM:	60Hz high--120Hz high--avdd/gamma/elvss/pulse--120Hz low--60Hz low
+	qcom,mdss-dsi-timing-switch-120-high-fre-command	(60Hz to 120Hz high frequency)
 	qcom,mdss-dsi-switch-avdd-command
 	qcom,mdss-dsi-switch-low-fre-120-command
-	qcom,mdss-dsi-timing-switch-120-command			(60Hz切120Hz低频)
+	qcom,mdss-dsi-timing-switch-120-command			(60Hz to 120Hz low frequency)
 	qcom,mdss-dsi-timing-switch-command
 
-120Hz关闭高频PWM：	120HZ高频--avdd/gamma/elvss/pulse--120HZ低频
+120Hz disable high-frequency PWM:	120Hz high--avdd/gamma/elvss/pulse--120Hz low
 	qcom,mdss-dsi-switch-avdd-command
 	qcom,mdss-dsi-switch-low-fre-120-command
 	qcom,mdss-dsi-timing-switch-command

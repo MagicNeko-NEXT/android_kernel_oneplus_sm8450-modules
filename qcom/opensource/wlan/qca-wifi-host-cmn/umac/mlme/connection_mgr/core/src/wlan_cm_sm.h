@@ -66,7 +66,7 @@
  * @WLAN_CM_SM_EV_ROAM_DONE:              Roam done
  * @WLAN_CM_SM_EV_PREAUTH_ACTIVE:         Preauth active
  * @WLAN_CM_SM_EV_PREAUTH_RESP:           Preauth response
- * @WLAN_CM_SM_EV_REASSOC_TIMER：         Reassoc timer expired
+ * @WLAN_CM_SM_EV_REASSOC_TIMER:         Reassoc timer expired
  * @WLAN_CM_SM_EV_HO_ROAM_DISCONNECT_DONE: Disconnect done for hands off/roaming
  * @WLAN_CM_SM_EV_MAX:                    Max event
  */

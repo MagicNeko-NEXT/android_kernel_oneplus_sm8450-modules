@@ -3411,7 +3411,7 @@ static int cam_tfe_csid_evt_bottom_half_handler(
 		}
 		CAM_DBG(CAM_ISP, "CSID[%d] error type %d err_type = %u",
 			csid_hw->hw_intf->hw_idx,
-			evt_payload->evt_type，
+			evt_payload->evt_type,
 			err_evt_info.err_type);
 #else
 		CAM_DBG(CAM_ISP, "CSID[%d] error type %d",
