@@ -86,6 +86,8 @@ ifeq ($(CONFIG_ARCH_KERA), y)
 	subdir-ccflags-y += $(LE_EXTRA_CFLAGS)
 endif
 
+# The kernel exports a user-space msm_kgsl.h that must not hide the driver's own.
+LINUXINCLUDE := -I$(KGSL_PATH)/include $(LINUXINCLUDE)
 ccflags-y += -I$(KGSL_PATH) -I$(KGSL_PATH)/include/linux -I$(KGSL_PATH)/include -I$(KERNEL_SRC)/drivers/devfreq
 ccflags-y += \
 		-I$(KGSL_PATH)/../synx-kernel/include/uapi/synx/media \
