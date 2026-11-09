@@ -7,6 +7,14 @@ export CONFIG_BTFM_SWR := m
 export CONFIG_FMD_ENABLE := y
 endif
 
+# waipio (taro): BT power, the slimbus BT audio driver and the RTC6226 FM
+# radio, as shipped on 5.10.
+ifeq ($(CONFIG_ARCH_WAIPIO), y)
+export CONFIG_MSM_BT_POWER := m
+export CONFIG_BTFM_SLIM := m
+export CONFIG_I2C_RTC6226_QCA := m
+endif
+
 ifeq ($(CONFIG_MSM_BT_POWER),m)
 KBUILD_CPPFLAGS += -DCONFIG_MSM_BT_POWER
 endif
