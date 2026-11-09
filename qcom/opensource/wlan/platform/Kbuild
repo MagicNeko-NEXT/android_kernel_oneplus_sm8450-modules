@@ -1,9 +1,16 @@
+# taro (waipio/cape) pairs with a PCIe QCA6490 like lahaina did.
+ifeq ($(TARGET_BOARD_PLATFORM),taro)
+WLAN_PLATFORM_PROFILE := lahaina
+else
+WLAN_PLATFORM_PROFILE := sun
+endif
+
 include \
-	$(WLAN_PLATFORM_ROOT)/cnss2/sun_gki_defconfig \
-	$(WLAN_PLATFORM_ROOT)/cnss_genl/sun_gki_defconfig \
-	$(WLAN_PLATFORM_ROOT)/cnss_prealloc/sun_gki_defconfig \
-	$(WLAN_PLATFORM_ROOT)/cnss_utils/sun_gki_defconfig \
-	$(WLAN_PLATFORM_ROOT)/icnss2/sun_gki_defconfig
+	$(WLAN_PLATFORM_ROOT)/cnss2/$(WLAN_PLATFORM_PROFILE)_gki_defconfig \
+	$(WLAN_PLATFORM_ROOT)/cnss_genl/$(WLAN_PLATFORM_PROFILE)_gki_defconfig \
+	$(WLAN_PLATFORM_ROOT)/cnss_prealloc/$(WLAN_PLATFORM_PROFILE)_gki_defconfig \
+	$(WLAN_PLATFORM_ROOT)/cnss_utils/$(WLAN_PLATFORM_PROFILE)_gki_defconfig \
+	$(WLAN_PLATFORM_ROOT)/icnss2/$(WLAN_PLATFORM_PROFILE)_gki_defconfig
 
 
 ifeq ($(CONFIG_CNSS_OUT_OF_TREE),y)
