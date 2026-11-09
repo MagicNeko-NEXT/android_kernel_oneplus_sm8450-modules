@@ -850,8 +850,17 @@ static int _sde_kms_release_shared_buffer(unsigned long mem_addr,
 	#endif
 #endif
 
-	for (pfn_idx = pfn_start; pfn_idx < pfn_end; pfn_idx++)
+	for (pfn_idx = pfn_start; pfn_idx < pfn_end; pfn_idx++) {
+#if IS_ENABLED(CONFIG_ARM64)
+		/*
+		 * A no-map splash region is not in the linear map: handing its
+		 * pages to the page allocator would fault on first use.
+		 */
+		if (!pfn_is_map_memory(pfn_idx))
+			continue;
+#endif
 		free_reserved_page(pfn_to_page(pfn_idx));
+	}
 
 	return ret;
 
