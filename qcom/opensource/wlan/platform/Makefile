@@ -36,7 +36,10 @@ KBUILD_OPTIONS += CONFIG_ICNSS2=m
 KBUILD_OPTIONS += CONFIG_ICNSS2_QMI=y
 KBUILD_OPTIONS += CONFIG_ICNSS2_DEBUG=y
 endif
+# taro uses the lahaina profile, which has no SMEM mailbox.
+ifneq ($(TARGET_BOARD_PLATFORM),taro)
 KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS=$(M)/../../data-kernel/drivers/smem-mailbox/Module.symvers
+endif
 endif
 
 all: modules
