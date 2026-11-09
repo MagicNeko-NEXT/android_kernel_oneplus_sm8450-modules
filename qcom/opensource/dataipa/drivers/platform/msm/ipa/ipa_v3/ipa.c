@@ -8330,8 +8330,10 @@ static int ipa3_post_init(const struct ipa3_plat_drv_res *resource_p,
 	ipa_ssr_driver_dump_init();
 	ipa_ssr_driver_dump_register_region("ipa_ctx", ipa3_ctx,
 	 sizeof(struct ipa3_context));
-	ipa_ssr_driver_dump_register_region("ipc_logs", ipa3_ctx->logbuf,
-	((struct ipc_log_context *)(ipa3_ctx->logbuf))->write_avail);
+	/* logbuf is NULL when the kernel has no IPC logging */
+	if (ipa3_ctx->logbuf)
+		ipa_ssr_driver_dump_register_region("ipc_logs", ipa3_ctx->logbuf,
+		((struct ipc_log_context *)(ipa3_ctx->logbuf))->write_avail);
 	ipa_ssr_driver_dump_register_region("gsi_ctx", gsi_ctx, sizeof(struct gsi_ctx));
 
 
