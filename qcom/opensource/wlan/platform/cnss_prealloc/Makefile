@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-include $(WLAN_PLATFORM_ROOT)/cnss_prealloc/sun_gki_defconfig
+WLAN_PLATFORM_PROFILE ?= sun
+include $(WLAN_PLATFORM_ROOT)/cnss_prealloc/$(WLAN_PLATFORM_PROFILE)_gki_defconfig
 ccflags-y += -Wmissing-prototypes
 
 ifeq ($(CONFIG_CNSS_OUT_OF_TREE),y)

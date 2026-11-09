@@ -1,8 +1,8 @@
 # taro (waipio/cape) pairs with a PCIe QCA6490 like lahaina did.
 ifeq ($(TARGET_BOARD_PLATFORM),taro)
-WLAN_PLATFORM_PROFILE := lahaina
+export WLAN_PLATFORM_PROFILE := lahaina
 else
-WLAN_PLATFORM_PROFILE := sun
+export WLAN_PLATFORM_PROFILE := sun
 endif
 
 include \
