@@ -25,6 +25,12 @@ LINUXINCLUDE    += -include $(DATAIPADRVTOP)/../../../config/dataipa_debug.h
 endif
 endif
 
+ifeq ($(CONFIG_ARCH_WAIPIO), y)
+export CONFIG_IPA3_REGDUMP_IPA_5_5 :=
+export CONFIG_IPA3_REGDUMP_IPA_5_0 := y
+LINUXINCLUDE    += -include $(DATAIPADRVTOP)/../../../config/dataipa_waipio_regdump.h
+endif
+
 ifeq ($(filter $(CONFIG_ARCH_KHAJE) $(CONFIG_ARCH_BLAIR) $(CONFIG_ARCH_HOLI) $(CONFIG_ARCH_MONACO), y), y)
 LINUXINCLUDE    += -include $(DATAIPADRVTOP)/../../../config/dataipa_vendor_ipav4.h
 include $(DATAIPADRVTOP)/../../../config/dataipa_GKI_ipav4.conf
