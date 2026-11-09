@@ -33,6 +33,9 @@
 #include "codecs/wcd938x/wcd938x-mbhc.h"
 #include "codecs/wsa883x/wsa883x.h"
 #include "codecs/wcd938x/wcd938x.h"
+#ifdef CONFIG_SND_SOC_WCD937X
+#include "codecs/wcd937x/wcd937x.h"
+#endif
 #include "codecs/lpass-cdc/lpass-cdc.h"
 #include <bindings/audio-codec-port-types.h>
 #include "codecs/lpass-cdc/lpass-cdc-wsa-macro.h"
@@ -204,12 +207,13 @@ static void msm_set_upd_config(struct snd_soc_pcm_runtime *rtd)
 		}
 	} else {
 		component = snd_soc_rtdcom_lookup(rtd, WCD938X_DRV_NAME);
-		if (!component) {
+#ifdef CONFIG_SND_SOC_WCD937X
+		if (!component)
 			component = snd_soc_rtdcom_lookup(rtd, WCD937X_DRV_NAME);
-			if (!component) {
-				pr_err("%s component is NULL\n", __func__);
-				return;
-			}
+#endif
+		if (!component) {
+			pr_err("%s component is NULL\n", __func__);
+			return;
 		}
 	}
 
@@ -217,10 +221,13 @@ static void msm_set_upd_config(struct snd_soc_pcm_runtime *rtd)
 		pdata->get_dev_num = wsa883x_codec_get_dev_num;
 	}
 	else {
+#ifdef CONFIG_SND_SOC_WCD937X
 		if(!strncmp(component->driver->name, WCD937X_DRV_NAME,
 				strlen(WCD937X_DRV_NAME))){
 			pdata->get_dev_num = wcd937x_codec_get_dev_num;
-		} else if(!strncmp(component->driver->name, WCD938X_DRV_NAME,
+		} else
+#endif
+		if(!strncmp(component->driver->name, WCD938X_DRV_NAME,
 				strlen(WCD938X_DRV_NAME))){
 			pdata->get_dev_num = wcd938x_codec_get_dev_num;
 		}
@@ -526,8 +533,8 @@ static struct snd_soc_dai_link msm_wcn_be_dai_links[] = {
 static struct snd_soc_dai_link ext_disp_be_dai_link[] = {
 	/* DISP PORT BACK END DAI Link */
 	{
-		.name = LPASS_BE_DISPLAY_PORT_RX,
-		.stream_name = LPASS_BE_DISPLAY_PORT_RX,
+		.name = LPASS_BE_DISPLAY_PORT_RX_0,
+		.stream_name = LPASS_BE_DISPLAY_PORT_RX_0,
 		.playback_only = 1,
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
 			SND_SOC_DPCM_TRIGGER_POST},
@@ -1262,7 +1269,7 @@ static int msm_snd_card_late_probe(struct snd_soc_card *card)
 	if (!rtd) {
 		dev_err(card->dev,
 			"%s: snd_soc_get_pcm_runtime for %s failed!\n",
-			__func__, card->dai_link[0]);
+			__func__, card->dai_link[0].name);
 		return -EINVAL;
 	}
 
@@ -1632,7 +1639,7 @@ static int waipio_ssr_enable(struct device *dev, void *data)
 	if (!rtd_wcd) {
 		dev_dbg(dev,
 			"%s: snd_soc_get_pcm_runtime for %s failed!\n",
-			__func__, card->dai_link[0]);
+			__func__, card->dai_link[0].name);
 	}
 
 	if (pdata->wsa_max_devs > 0) {
@@ -1641,7 +1648,7 @@ static int waipio_ssr_enable(struct device *dev, void *data)
 		if (!rtd_wsa) {
 			dev_dbg(dev,
 			"%s: snd_soc_get_pcm_runtime for %s failed!\n",
-			__func__, card->dai_link[ARRAY_SIZE(msm_rx_tx_cdc_dma_be_dai_links)]);
+			__func__, card->dai_link[ARRAY_SIZE(msm_rx_tx_cdc_dma_be_dai_links)].name);
 		}
 	}
 	/* set UPD configuration */
