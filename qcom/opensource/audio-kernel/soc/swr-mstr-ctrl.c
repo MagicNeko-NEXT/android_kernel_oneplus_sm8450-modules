@@ -3033,6 +3033,12 @@ static int swrm_master_init(struct swr_mstr_ctrl *swrm)
 #ifdef CONFIG_SWRM_VER_2P0
 	reg[len] = SWRM_CLK_CTRL(swrm->ee_val);
 	value[len++] = 0x01;
+#else
+	reg[len] = SWRM_MCP_BUS_CTRL;
+	if (swrm->version < SWRM_VERSION_1_7)
+		value[len++] = 0x2;
+	else
+		value[len++] = 0x2 << swrm->ee_val;
 #endif
 
 	swr_master_bulk_write(swrm, reg, value, len);
@@ -3203,7 +3209,11 @@ static int swrm_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_dbg(&pdev->dev, "%s: swrm version not defined, use default\n",
 			 __func__);
+#ifdef CONFIG_SWRM_VER_2P0
 		swrm->version = SWRM_VERSION_2_0;
+#else
+		swrm->version = SWRM_VERSION_1_7;
+#endif
 	}
 	ret = of_property_read_u32(pdev->dev.of_node, "qcom,swr_master_id",
 				&swrm->master_id);
@@ -3799,7 +3809,9 @@ static int swrm_runtime_resume(struct device *dev)
 			swr_master_write(swrm,
 				SWRM_CLK_CTRL(swrm->ee_val), 0x01);
 #else
-			swr_master_write(swrm, SWRM_MCP_BUS_CTRL, 0x2);
+			swr_master_write(swrm, SWRM_MCP_BUS_CTRL,
+				(swrm->version < SWRM_VERSION_1_7) ?
+				0x2 : (0x2 << swrm->ee_val));
 #endif
 			/* clear and enable bus clash interrupt */
 			swr_master_write(swrm,
