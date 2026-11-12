@@ -849,7 +849,7 @@ static int _sde_kms_release_shared_buffer(unsigned long mem_addr,
 	pfn_end = (mem_addr + splash_buffer_size) >> PAGE_SHIFT;
 
 	if (!pfn_is_map_memory(pfn_start)) {
-		SDE_WARN("splash memory 0x%lx is not map memory, skip release\n", mem_addr);
+		SDE_ERROR("splash memory 0x%lx is not map memory, skip release\n", mem_addr);
 		return 0;
 	}
 
