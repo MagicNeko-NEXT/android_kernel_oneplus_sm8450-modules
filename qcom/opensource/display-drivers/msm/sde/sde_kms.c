@@ -848,6 +848,11 @@ static int _sde_kms_release_shared_buffer(unsigned long mem_addr,
 	pfn_start = mem_addr >> PAGE_SHIFT;
 	pfn_end = (mem_addr + splash_buffer_size) >> PAGE_SHIFT;
 
+	if (!pfn_is_map_memory(pfn_start)) {
+		SDE_WARN("splash memory 0x%lx is not map memory, skip release\n", mem_addr);
+		return 0;
+	}
+
 #if (KERNEL_VERSION(6, 3, 0) > LINUX_VERSION_CODE)
 	#if (KERNEL_VERSION(5, 19, 0) <= LINUX_VERSION_CODE)
 		memblock_free((unsigned int *)mem_addr, splash_buffer_size);
