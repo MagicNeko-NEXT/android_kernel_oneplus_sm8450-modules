@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -16,6 +16,9 @@
 #include "sde_hw_util.h"
 #include "sde_kms.h"
 #include <drm/msm_drm_aiqe.h>
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+#include "dsi_iris_api.h"
+#endif
 
 /* Reserve space of 128 words for LUT dma payload set-up */
 #define REG_DMA_HEADERS_BUFFER_SZ (sizeof(u32) * 128)
@@ -47,7 +50,6 @@
 #define REG_DMA_LTM_UPDATE_REQ_MASK 0xFFFFFFFE
 
 #define REG_DMA_SPR_CONFIG_MASK ~0xFDFFFFFF
-#define REG_DMA_SPR_PARTIAL_CROP_BOT_MASK 0xDFFFFFFF
 
 #define GAMUT_LUT_MEM_SIZE ((sizeof(struct drm_msm_3d_gamut)) + \
 		REG_DMA_HEADERS_BUFFER_SZ)
@@ -335,29 +337,15 @@ static int _reg_dmav1_rc_program_enable_bits(
 	if (r2_enable)
 		val |= BIT(4);
 
-	/*ROI should include complete top region when top region is enabled*/
-	if (r1_enable &&
-		(rc_roi->y || ((rc_roi->y + rc_roi->h) < rc_mask_cfg->cfg_param_01))) {
-		SDE_EVT32(0x1111, RC_IDX(hw_dspp), r1_enable, rc_roi->y, rc_roi->h,
-				rc_mask_cfg->cfg_param_01);
-		return -EINVAL;
-	}
-
-	/*ROI should include complete bottom region when bottom region is enabled*/
-	if (r2_enable &&
-		(((rc_roi->y + rc_roi->h) != mask_h) || (rc_roi->y > rc_mask_cfg->cfg_param_02))) {
-		SDE_EVT32(0x2222, RC_IDX(hw_dspp), r2_enable, rc_roi->y, rc_roi->h, mask_h,
-				rc_mask_cfg->cfg_param_02);
-		return -EINVAL;
-	}
-
-	ystart = rc_roi->y;
+	/*corner case for partial update in R2 region*/
+	if (!r1_enable && r2_enable)
+		ystart = rc_roi->y;
 
 	SDE_DEBUG("idx:%d w:%lld h:%lld flags:%llx, R1:%d, R2:%d, PU R1:%d, PU R2:%d, Y_START:%d\n",
-			RC_IDX(hw_dspp), mask_w, mask_h, flags, r1_valid, r2_valid, pu_in_r1,
-			pu_in_r2, ystart);
+		RC_IDX(hw_dspp), mask_w, mask_h, flags, r1_valid, r2_valid, pu_in_r1,
+		pu_in_r2, ystart);
 	SDE_EVT32(RC_IDX(hw_dspp), mask_w, mask_h, flags, r1_valid, r2_valid, pu_in_r1, pu_in_r2,
-			ystart);
+		ystart);
 
 	val |= param_c;
 	rc = _reg_dmav1_rc_write(hw_dspp, SDE_HW_RC_REG1, val, dma_ops, feature);
@@ -5372,7 +5360,6 @@ void reg_dmav2_setup_dspp_igcv4(struct sde_hw_dspp *ctx, void *cfg)
 	data[j++] = lut_cfg->c2_last ? (u16)(lut_cfg->c2_last << 4) : (4095 << 4);
 	data[j++] = lut_cfg->c0_last ? (u16)(lut_cfg->c0_last << 4) : (4095 << 4);
 	data[j++] = lut_cfg->c1_last ? (u16)(lut_cfg->c1_last << 4) : (4095 << 4);
-
 	reg_dmav2_setup_dspp_igc_common(ctx, cfg, len, data, transfer_size_bytes);
 	kvfree(data);
 }
@@ -6418,41 +6405,6 @@ cleanup:
 	kvfree(reg);
 }
 
-int reg_dmav1_setup_spr_pu_config(struct sde_hw_dspp *ctx,
-	struct msm_roi_list *roi_list,
-	struct sde_hw_reg_dma_ops *dma_ops, struct sde_reg_dma_buffer *buffer)
-{
-	struct sde_reg_dma_setup_ops_cfg dma_write_cfg;
-	uint32_t reg_off, base_off;
-	uint32_t reg = 0;
-	int rc = 0;
-
-	base_off = ctx->hw.blk_off + ctx->cap->sblk->spr.base;
-
-	REG_DMA_INIT_OPS(dma_write_cfg, MDSS, SPR_PU_CFG, buffer);
-	REG_DMA_SETUP_OPS(dma_write_cfg, 0, NULL, 0, HW_BLK_SELECT, 0, 0, 0);
-	rc = dma_ops->setup_payload(&dma_write_cfg);
-	if (rc) {
-		DRM_ERROR("spr pu write decode select failed ret %d\n", rc);
-		return rc;
-	}
-
-	if (roi_list && roi_list->spr_roi[0].y2 != roi_list->roi[0].y2)
-		reg = BIT(29);
-
-	reg_off = base_off + 0x04;
-	REG_DMA_SETUP_OPS(dma_write_cfg, reg_off, &reg,
-		sizeof(uint32_t), REG_SINGLE_MODIFY, 0, 0, REG_DMA_SPR_PARTIAL_CROP_BOT_MASK);
-
-	rc = dma_ops->setup_payload(&dma_write_cfg);
-	if (rc) {
-		DRM_ERROR("write pu config failed ret %d\n", rc);
-		return rc;
-	}
-
-	return rc;
-}
-
 int reg_dmav1_setup_spr_pu_common(struct sde_hw_dspp *ctx, struct sde_hw_cp_cfg *hw_cfg,
 		struct msm_roi_list *roi_list,
 		struct sde_hw_reg_dma_ops *dma_ops, struct sde_reg_dma_buffer *buffer)
@@ -6479,7 +6431,11 @@ int reg_dmav1_setup_spr_pu_common(struct sde_hw_dspp *ctx, struct sde_hw_cp_cfg 
 
 		reg = APPLY_MASK_AND_SHIFT(roi_list->spr_roi[0].x1, 16, 0) |
 			APPLY_MASK_AND_SHIFT(roi_list->spr_roi[0].y1, 16, 16);
+
+		SDE_EVT32(roi_list->spr_roi[0].x1, roi_list->spr_roi[0].y1);
 	}
+
+	SDE_EVT32(0xdead, reg);
 
 	REG_DMA_INIT_OPS(dma_write_cfg, MDSS, SPR_PU_CFG, buffer);
 	REG_DMA_SETUP_OPS(dma_write_cfg, 0, NULL, 0, HW_BLK_SELECT, 0, 0, 0);
@@ -6565,11 +6521,8 @@ void reg_dmav1_setup_spr_pu_cfgv2(struct sde_hw_dspp *ctx, void *cfg)
 	if (hw_cfg->payload && hw_cfg->len == sizeof(struct sde_drm_roi_v1))
 		roi_list = hw_cfg->payload;
 
-	rc = reg_dmav1_setup_spr_pu_common(ctx, cfg, roi_list, dma_ops, buffer);
-	if (rc)
-		return;
 
-	rc = reg_dmav1_setup_spr_pu_config(ctx, roi_list, dma_ops, buffer);
+	rc = reg_dmav1_setup_spr_pu_common(ctx, cfg, roi_list, dma_ops, buffer);
 	if (rc)
 		return;
 

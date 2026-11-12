@@ -82,9 +82,6 @@
 #define SDE_INTR_INTF_6_UNDERRUN BIT(16)
 #define SDE_INTR_INTF_7_UNDERRUN BIT(18)
 #define SDE_INTR_INTF_8_UNDERRUN BIT(12)
-#define SDE_INTR_INTF_9_UNDERRUN BIT(5)
-#define SDE_INTR_INTF_10_UNDERRUN BIT(2)
-#define SDE_INTR_INTF_11_UNDERRUN BIT(14)
 #define SDE_INTR_INTF_0_VSYNC BIT(25)
 #define SDE_INTR_INTF_1_VSYNC BIT(27)
 #define SDE_INTR_INTF_2_VSYNC BIT(29)
@@ -94,9 +91,6 @@
 #define SDE_INTR_INTF_6_VSYNC BIT(17)
 #define SDE_INTR_INTF_7_VSYNC BIT(19)
 #define SDE_INTR_INTF_8_VSYNC BIT(13)
-#define SDE_INTR_INTF_9_VSYNC BIT(6)
-#define SDE_INTR_INTF_10_VSYNC BIT(3)
-#define SDE_INTR_INTF_11_VSYNC BIT(15)
 
 /**
  * Ctl start interrupt status bit definitions
@@ -168,11 +162,8 @@
 #define SDE_INTR_DSICMD_2_INTO_STATIC BIT(6)
 #define SDE_INTR_DSICMD_2_OUTOF_STATIC BIT(7)
 #define SDE_INTR_PROG_LINE BIT(8)
-#define SDE_INTR_PANEL_VSYNC BIT(9)
 #define SDE_INTR_INTF_WD_TIMER_0_DONE BIT(13)
 #define SDE_INTR_ESYNC_EMSYNC BIT(16)
-#define SDE_INTR_ESYNC_VSYNC  BIT(17)
-#define SDE_INTR_ESYNC_MDP_VSYNC  BIT(18)
 
 /**
  * AD4 interrupt status bit definitions
@@ -312,12 +303,6 @@ static struct sde_irq_type sde_irq_intr_map[] = {
 	{ SDE_IRQ_TYPE_INTF_VSYNC, INTF_7, SDE_INTR_INTF_7_VSYNC, -1},
 	{ SDE_IRQ_TYPE_INTF_UNDER_RUN, INTF_8, SDE_INTR_INTF_8_UNDERRUN, -1},
 	{ SDE_IRQ_TYPE_INTF_VSYNC, INTF_8, SDE_INTR_INTF_8_VSYNC, -1},
-	{ SDE_IRQ_TYPE_INTF_UNDER_RUN, INTF_9, SDE_INTR_INTF_9_UNDERRUN, -1},
-	{ SDE_IRQ_TYPE_INTF_VSYNC, INTF_9, SDE_INTR_INTF_9_VSYNC, -1},
-	{ SDE_IRQ_TYPE_INTF_UNDER_RUN, INTF_10, SDE_INTR_INTF_10_UNDERRUN, -1},
-	{ SDE_IRQ_TYPE_INTF_VSYNC, INTF_10, SDE_INTR_INTF_10_VSYNC, -1},
-	{ SDE_IRQ_TYPE_INTF_UNDER_RUN, INTF_11, SDE_INTR_INTF_11_UNDERRUN, -1},
-	{ SDE_IRQ_TYPE_INTF_VSYNC, INTF_11, SDE_INTR_INTF_11_VSYNC, -1},
 #endif /* CONFIG_LEGACY_INTR_DEF */
 };
 
@@ -407,9 +392,6 @@ static struct sde_irq_type sde_irq_intf_map[] = {
 	{ SDE_IRQ_TYPE_PROG_LINE, -1, SDE_INTR_PROG_LINE, -1},
 	{ SDE_IRQ_TYPE_WD_TIMER_1, -1, SDE_INTR_INTF_WD_TIMER_0_DONE, -1},
 	{ SDE_IRQ_TYPE_INTF_ESYNC_EMSYNC, -1, SDE_INTR_ESYNC_EMSYNC, -1},
-	{ SDE_IRQ_TYPE_INTF_ESYNC_VSYNC, -1, SDE_INTR_ESYNC_VSYNC, -1},
-	{ SDE_IRQ_TYPE_INTF_PANEL_VSYNC, -1, SDE_INTR_PANEL_VSYNC, -1},
-	{ SDE_IRQ_TYPE_INTF_ESYNC_MDP_VSYNC, -1, SDE_INTR_ESYNC_MDP_VSYNC, -1},
 };
 
 static struct sde_irq_type sde_irq_ad4_map[] = {
@@ -521,17 +503,11 @@ static void sde_hw_intr_dispatch_irq(struct sde_hw_intr *intr,
 				 reg_idx)) {
 				/*
 				 * Once a match on irq mask, perform a callback
-				 * to the given cbfunc. cbfunc will take care
-				 * the interrupt status clearing. If cbfunc is
-				 * not provided, then the interrupt clearing
-				 * is here.
+				 * to the given cbfunc. This callback is done
+				 * after clearing the interrupt registers.
 				 */
 				if (cbfunc)
 					cbfunc(arg, irq_idx);
-				else
-					intr->ops.clear_intr_status_nolock(
-							intr, irq_idx);
-
 				/*
 				 * When callback finish, clear the irq_status
 				 * with the matching mask. Once irq_status
@@ -894,7 +870,6 @@ static void __setup_intr_ops(struct sde_hw_intr_ops *ops)
 	ops->disable_all_irqs = sde_hw_intr_disable_irqs;
 	ops->get_interrupt_sources = sde_hw_intr_get_interrupt_sources;
 	ops->clear_interrupt_status = sde_hw_intr_clear_interrupt_status;
-	ops->clear_intr_status_nolock = sde_hw_intr_clear_intr_status_nolock;
 	ops->get_interrupt_status = sde_hw_intr_get_interrupt_status;
 	ops->get_intr_status_nolock = sde_hw_intr_get_intr_status_nolock;
 }

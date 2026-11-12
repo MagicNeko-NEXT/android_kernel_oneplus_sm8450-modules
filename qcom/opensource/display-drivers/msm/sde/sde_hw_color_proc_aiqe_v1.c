@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <drm/msm_drm_aiqe.h>
@@ -28,7 +28,7 @@ static void sde_setup_aiqe_common_v1(struct sde_hw_dspp *ctx, void *cfg,
 			((aiqe_common.width & 0xFFF) << 16) | (aiqe_common.height & 0xFFF));
 	SDE_REG_WRITE(&ctx->hw, aiqe_base + 0x3EC, 0);
 	SDE_EVT32(aiqe_common.config, aiqe_common.merge,
-			 (aiqe_common.width & 0xFFF), (aiqe_common.height & 0xFFF));
+			 ((aiqe_common.width & 0xFFF) << 16), (aiqe_common.height & 0xFFF));
 }
 
 static int _reg_dmav1_aiqe_write_top_level_v1(struct sde_reg_dma_setup_ops_cfg *dma_cfg,
@@ -687,13 +687,12 @@ static bool valid_abc_main_layer_cfg_v1(struct drm_msm_abc *aiqe_abc,
 	tempw = aiqe_abc->param[1] & ((1 << 12) - 1);
 
 	if (w != tempw || h != temph) {
-		DRM_ERROR("invalid plane param h %d w %d exp h %d exp w %d\n", tempw,
+		DRM_ERROR("invalid plane param h %d w %d exp h %d exp w %d\n", temph,
 		temph, h, w);
 		return false;
 	}
 
-	// width (width/div factor) should be multiple of 4 as the fetch happen in words
-	w = ((w + 1) * 3) / 4;
+	w = (w * 3) / 4;
 	if (h != hw_cfg->skip_planes[SB_PLANE_REAL].plane_h ||
 		w != hw_cfg->skip_planes[SB_PLANE_REAL].plane_w) {
 		DRM_ERROR("real plane invalid plane h %d w %d exp h %d exp w %d\n",
@@ -770,7 +769,6 @@ void sde_setup_aiqe_abc_v1(struct sde_hw_dspp *ctx, void *cfg, void *aiqe_top)
 		if (!hw_cfg->payload)
 			sde_setup_aiqe_common_v1(ctx, hw_cfg, aiqe_top);
 		SDE_REG_WRITE(&ctx->hw, aiqe_base + 0x020, 0);
-		LOG_FEATURE_OFF;
 		return;
 	}
 
@@ -786,5 +784,4 @@ void sde_setup_aiqe_abc_v1(struct sde_hw_dspp *ctx, void *cfg, void *aiqe_top)
 		SDE_REG_WRITE(&ctx->hw, aiqe_base + 0x020 + (i * sizeof(u32)), aiqe_abc->param[i]);
 
 	sde_setup_aiqe_common_v1(ctx, hw_cfg, aiqe_top);
-	LOG_FEATURE_ON;
 }

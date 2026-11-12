@@ -9,6 +9,9 @@
 
 #include "dsi_defs.h"
 #include "dsi_hw.h"
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "oplus_debug.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 #define DSI_MAX_SETTINGS 8
 #define DSI_PHY_TIMING_V3_SIZE 12
@@ -26,6 +29,26 @@
 #define DSI_MISC_R32(dsi_phy_hw, off) DSI_GEN_R32((dsi_phy_hw)->phy_clamp_base, off)
 #define DSI_MISC_W32(dsi_phy_hw, off, val) \
 	DSI_GEN_W32_DEBUG((dsi_phy_hw)->phy_clamp_base, (dsi_phy_hw)->index, off, val)
+
+#ifdef OPLUS_FEATURE_DISPLAY
+#undef DSI_PHY_ERR
+#ifdef OPLUS_TRACKPOINT_REPORT
+#include <soc/oplus/oplus_trackpoint_report.h>
+#define DSI_PHY_ERR(p, fmt, ...) \
+	do { \
+		DRM_DEV_ERROR(NULL, "[msm-dsi-error]: DSI_%d: "\
+				fmt, p ? p->index : -1, ##__VA_ARGS__); \
+		display_exception_trackpoint_report("DisplayDriverID@@%d$$" pr_fmt(fmt), \
+			OPLUS_DISP_Q_ERROR_PHY_HW, ##__VA_ARGS__); \
+	} while(0)
+#else
+#define DSI_PHY_ERR(p, fmt, ...) \
+	do { \
+		DRM_DEV_ERROR(NULL, "[msm-dsi-error]: DSI_%d: "\
+				fmt, p ? p->index : -1, ##__VA_ARGS__); \
+	} while(0)
+#endif /* OPLUS_TRACKPOINT_REPORT */
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 /**
  * enum dsi_phy_version - DSI PHY version enumeration
@@ -119,7 +142,6 @@ struct dsi_phy_per_lane_cfgs {
  * @is_phy_timing_present:	Boolean whether phy timings are defined.
  * @regulators:       Regulator settings for lanes.
  * @pll_source:       PLL source.
- * @data_lanes:       Bitmask of enum dsi_data_lanes.
  * @lane_map:         DSI logical to PHY lane mapping.
  * @force_clk_lane_hs:Boolean whether to force clock lane in HS mode.
  * @phy_type:         Phy-type (Dphy/Cphy).
@@ -138,7 +160,6 @@ struct dsi_phy_cfg {
 	enum dsi_phy_type phy_type;
 	unsigned long bit_clk_rate_hz;
 	struct dsi_split_link_config split_link;
-	u32 data_lanes;
 };
 
 struct dsi_phy_hw;

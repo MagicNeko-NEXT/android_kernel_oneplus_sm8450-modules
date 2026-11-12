@@ -17,10 +17,17 @@
 #include "sde_fence.h"
 #include "dsi_display.h"
 
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "oplus_connector.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 #define SDE_CONNECTOR_NAME_SIZE	16
 #define SDE_CONNECTOR_DHDR_MEMPOOL_MAX_SIZE	SZ_32
 #define MAX_CMD_RECEIVE_SIZE       256
 #define DNSC_BLUR_MAX_COUNT	1
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+#define SDE_CONNECTOR_SYNC_DATA_NUM 3
+#endif
 
 struct sde_connector;
 struct sde_connector_state;
@@ -497,6 +504,7 @@ struct sde_connector_ops {
 	 * Returns: Zero on success
 	 */
 	int (*process_dcs_cmd_bitmask)(void *display, struct msm_display_conn_params *params);
+
 };
 
 /**
@@ -692,6 +700,9 @@ struct sde_backlight_vrr_update {
  */
 struct sde_connector {
 	struct drm_connector base;
+#ifdef OPLUS_FEATURE_DISPLAY
+	struct oplus_connector oplus_conn;
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	int connector_type;
 
@@ -1574,6 +1585,12 @@ const char *sde_conn_get_topology_name(struct drm_connector *conn,
  * @Return: line insertion support status
  */
 bool sde_connector_is_line_insertion_supported(struct sde_connector *sde_conn);
+
+#ifdef OPLUS_FEATURE_DISPLAY
+int _sde_connector_update_bl_scale_(struct sde_connector *c_conn);
+
+void _sde_connector_report_panel_dead(struct sde_connector *conn, bool skip_pre_kickoff);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 /**
  * _sde_connector_get_display - get dsi display according to connector

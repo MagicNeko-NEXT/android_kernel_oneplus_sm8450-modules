@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -228,6 +228,7 @@ enum sde_stage {
 	SDE_STAGE_8,
 	SDE_STAGE_9,
 	SDE_STAGE_10,
+	SDE_STAGE_11,
 	SDE_STAGE_MAX
 };
 
@@ -345,9 +346,6 @@ enum sde_intf {
 	INTF_6,
 	INTF_7,
 	INTF_8,
-	INTF_9,
-	INTF_10,
-	INTF_11,
 	INTF_MAX
 };
 
@@ -458,23 +456,6 @@ enum {
 	C1_B_Cb = 1,
 	C2_R_Cr = 2,
 	C3_ALPHA = 3
-};
-
-/**
- * enum sde_color_component_mask
- * Describes which color component(s) to be extracted
- * @SDE_COLOR_MASK_NONE    : No color component to be extracted
- * @SDE_COLOR_MASK_GREEN   : Green color component to be extracted
- * @SDE_COLOR_MASK_BLUE    : blue color component to be extracted
- * @SDE_COLOR_MASK_RED     : Red color component to be extracted
- * @SDE_COLOR_MASK_ALPHA   : Alpha color component to be extracted
- */
-enum sde_color_component_mask {
-	SDE_COLOR_MASK_NONE = 0,
-	SDE_COLOR_MASK_GREEN = BIT(C0_G_Y),
-	SDE_COLOR_MASK_BLUE = BIT(C1_B_Cb),
-	SDE_COLOR_MASK_RED = BIT(C2_R_Cr),
-	SDE_COLOR_MASK_ALPHA = BIT(C3_ALPHA),
 };
 
 /**
@@ -757,6 +738,7 @@ enum skip_blend_plane_type {
  * @panel_width: width of display panel in pixels.
  * @skip_planes: array of skip blend planes with crtc
  * @num_ds_enabled: Number of destination scalers enabled
+ * @is_crtc_enabled: true if crtc is enabled
  * @overfetch_lines_on_top: extra lines to over fetch on top
  * @overfetch_lines_on_top: extra lines to over fetch on bottom
  */
@@ -775,6 +757,7 @@ struct sde_hw_cp_cfg {
 	u32 panel_width;
 	struct sde_cp_skip_blend_plane skip_planes[SB_PLANE_MAX];
 	u32 num_ds_enabled;
+	bool is_crtc_enabled;
 	u32 overfetch_lines_on_top;
 	u32 overfetch_lines_on_bottom;
 };

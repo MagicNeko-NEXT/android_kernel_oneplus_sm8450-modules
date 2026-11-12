@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -59,6 +59,9 @@
 
 #include "sde_power_handle.h"
 
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+#include "pw_iris_uapi.h"
+#endif
 #define GET_MAJOR_REV(rev)		((rev) >> 28)
 #define GET_MINOR_REV(rev)		(((rev) >> 16) & 0xFFF)
 #define GET_STEP_REV(rev)		((rev) & 0xFFFF)
@@ -164,7 +167,6 @@ enum msm_mdp_plane_property {
 	PLANE_PROP_CAC_TYPE,
 	PLANE_PROP_SRC_RECT_EXT,
 	PLANE_PROP_DST_RECT_EXT,
-	PLANE_PROP_COLOR_MASK_OVERRIDE,
 
 	/* total # of properties */
 	PLANE_PROP_COUNT
@@ -197,6 +199,9 @@ enum msm_mdp_crtc_property {
 	CRTC_PROP_ROI_V1,
 	CRTC_PROP_SECURITY_LEVEL,
 	CRTC_PROP_DEST_SCALER,
+#ifdef OPLUS_FEATURE_DISPLAY
+	CRTC_PROP_CUSTOM,
+#endif /* OPLUS_FEATURE_DISPLAY */
 	CRTC_PROP_CAPTURE_OUTPUT,
 
 	CRTC_PROP_IDLE_PC_STATE,
@@ -264,9 +269,30 @@ enum msm_mdp_conn_property {
 	CONNECTOR_PROP_CACHE_STATE,
 	CONNECTOR_PROP_DSC_MODE,
 	CONNECTOR_PROP_WB_USAGE_TYPE,
+#ifdef OPLUS_FEATURE_DISPLAY
+	// Prop to store sync panel backlight level
+	CONNECTOR_PROP_SYNC_BACKLIGHT_LEVEL,
+	CONNECTOR_PROP_SET_OSC_STATUS,
+	CONNECTOR_PROP_UPDATE_PANEL_APL_VALUE,
+#endif /* OPLUS_FEATURE_DISPLAY */
+
+#ifdef OPLUS_FEATURE_DISPLAY_ADFR
+	CONNECTOR_PROP_ADFR_MIN_FPS,
+#endif /* OPLUS_FEATURE_DISPLAY_ADFR */
+
+#ifdef OPLUS_FEATURE_DISPLAY_HIGH_PRECISION
+	CONNECTOR_PROP_HIGH_PRECISION_FPS,
+#endif /* OPLUS_FEATURE_DISPLAY_HIGH_PRECISION */
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	CONNECTOR_PROP_HBM_ENABLE,
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
 	CONNECTOR_PROP_WB_ROT_TYPE,
 	CONNECTOR_PROP_WB_ROT_BYTES_PER_CLK,
 	CONNECTOR_PROP_BPP_MODE,
+#ifdef OPLUS_FEATURE_AP_UIR_DIMMING
+	CONNECTOR_PROP_UIR_DS,
+#endif
 
 	/* total # of properties */
 	CONNECTOR_PROP_COUNT
@@ -886,13 +912,11 @@ struct msm_freq_step_list {
  * struct msm_vrr_capabilities - VRR capabilities
  * @vrr_support: True for any VRR supported panel
  * @video_psr_support: True if it is Video hybrid mode panel
- * @video_mrr_support: True if it is Video MRR feature for VHM panel
  * @arp_support:    True if it is ARP panel
  */
 struct msm_vrr_capabilities {
 	bool vrr_support;
 	bool video_psr_support;
-	bool video_mrr_support;
 	bool arp_support;
 };
 
@@ -1309,6 +1333,9 @@ struct msm_drm_private {
 	struct mutex vm_client_lock;
 	struct list_head vm_client_list;
 
+#ifdef OPLUS_FEATURE_DISPLAY
+	struct mutex dspp_lock;
+#endif /* OPLUS_FEATURE_DISPLAY */
 	struct mutex fence_error_client_lock;
 	struct list_head fence_error_client_list;
 
@@ -1529,13 +1556,15 @@ void msm_fbdev_free(struct drm_device *dev);
 
 struct hdmi;
 #if IS_ENABLED(CONFIG_DRM_MSM_HDMI)
-void __init hdmi_display_register(void);
-void __exit hdmi_display_unregister(void);
+int msm_hdmi_modeset_init(struct hdmi *hdmi, struct drm_device *dev,
+		struct drm_encoder *encoder);
+void __init msm_hdmi_register(void);
+void __exit msm_hdmi_unregister(void);
 #else
-static inline void __init hdmi_display_register(void)
+static inline void __init msm_hdmi_register(void)
 {
 }
-static inline void __exit hdmi_display_unregister(void)
+static inline void __exit msm_hdmi_unregister(void)
 {
 }
 #endif /* CONFIG_DRM_MSM_HDMI */

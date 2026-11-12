@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -42,6 +42,12 @@
 #include "sde_power_handle.h"
 #include "sde_irq.h"
 #include "sde_core_perf.h"
+#ifdef OPLUS_FEATURE_DISPLAY
+#include <soc/oplus/system/oplus_project.h>
+#endif /* OPLUS_FEATURE_DISPLAY */
+#ifdef OPLUS_TRACKPOINT_REPORT
+#include <soc/oplus/oplus_trackpoint_report.h>
+#endif /* OPLUS_TRACKPOINT_REPORT */
 
 #define DRMID(x) ((x) ? (x)->base.id : -1)
 
@@ -304,8 +310,6 @@ struct sde_kms {
 	void **lb_displays;
 	int lb_disp_count;
 	bool dsc_switch_support;
-	void **hdmi_displays;
-	int hdmi_display_count;
 
 	bool has_danger_ctrl;
 
@@ -496,11 +500,15 @@ void *sde_debugfs_get_root(struct sde_kms *sde_kms);
  * These functions/definitions allow for building up a 'sde_info' structure
  * containing one or more "key=value\n" entries.
  */
+#ifdef OPLUS_FEATURE_DISPLAY
+#define SDE_KMS_INFO_MAX_SIZE	8192
+#else /* OPLUS_FEATURE_DISPLAY */
 #if IS_ENABLED(CONFIG_DRM_LOW_MSM_MEM_FOOTPRINT)
 #define SDE_KMS_INFO_MAX_SIZE	(1 << 12)
 #else
 #define SDE_KMS_INFO_MAX_SIZE	(1 << 14)
 #endif
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 /**
  * struct sde_kms_info - connector information structure container

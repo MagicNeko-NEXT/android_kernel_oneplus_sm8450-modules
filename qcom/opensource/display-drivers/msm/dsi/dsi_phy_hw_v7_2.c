@@ -10,6 +10,9 @@
 #include "dsi_defs.h"
 #include "dsi_phy_hw.h"
 #include "dsi_catalog.h"
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "oplus_display_interface.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 #define DSIPHY_CMN_REVISION_ID0                                   0x000
 #define DSIPHY_CMN_REVISION_ID1                                   0x004
@@ -64,7 +67,6 @@
 #define DSIPHY_CMN_LANE_STATUS1                                   0x14C
 #define DSIPHY_CMN_GLBL_DIGTOP_SPARE10                            0x1AC
 #define DSIPHY_CMN_SL_DSI_LANE_CTRL1                              0x1B4
-#define PHY_CMN_GLBL_DIGTOP_SPARE4                                0x128
 
 /* n = 0..3 for data lanes and n = 4 for clock lane */
 #define DSIPHY_LNX_CFG0(n)                         (0x200 + (0x80 * (n)))
@@ -235,26 +237,6 @@ void dsi_phy_hw_v7_2_commit_phy_timing(struct dsi_phy_hw *phy,
 }
 
 /**
- * calc_cmn_lane_ctrl0() - Calculate the value to be set for
- *			   DSIPHY_CMN_LANE_CTRL0 register.
- * @cfg:      Per lane configurations for timing, strength and lane
- *	      configurations.
- */
-static inline u32 dsi_phy_hw_calc_cmn_lane_ctrl0(struct dsi_phy_cfg *cfg)
-{
-	u32 cmn_lane_ctrl0 = 0;
-
-	/* Only enable lanes that are required */
-	cmn_lane_ctrl0 |= ((cfg->data_lanes & DSI_DATA_LANE_0) ? BIT(0) : 0);
-	cmn_lane_ctrl0 |= ((cfg->data_lanes & DSI_DATA_LANE_1) ? BIT(1) : 0);
-	cmn_lane_ctrl0 |= ((cfg->data_lanes & DSI_DATA_LANE_2) ? BIT(2) : 0);
-	cmn_lane_ctrl0 |= ((cfg->data_lanes & DSI_DATA_LANE_3) ? BIT(3) : 0);
-	cmn_lane_ctrl0 |= BIT(4);
-
-	return cmn_lane_ctrl0;
-}
-
-/**
  * cphy_enable() - Enable CPHY hardware
  * @phy:      Pointer to DSI PHY hardware object.
  * @cfg:      Per lane configurations for timing, strength and lane
@@ -267,7 +249,6 @@ static void dsi_phy_hw_cphy_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *c
 	/* For C-PHY, no low power settings for lower clk rate */
 	u32 glbl_str_swi_cal_sel_ctrl = 0;
 	u32 glbl_hstx_str_ctrl_0 = 0;
-	u32 cmn_lane_ctrl0 = 0;
 
 	/* de-assert digital and pll power down */
 	data = BIT(6) | BIT(5);
@@ -306,8 +287,7 @@ static void dsi_phy_hw_cphy_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *c
 	/* Remove power down from all blocks */
 	DSI_W32(phy, DSIPHY_CMN_CTRL_0, 0x7f);
 
-	cmn_lane_ctrl0 = dsi_phy_hw_calc_cmn_lane_ctrl0(cfg);
-	DSI_W32(phy, DSIPHY_CMN_LANE_CTRL0, cmn_lane_ctrl0);
+	DSI_W32(phy, DSIPHY_CMN_LANE_CTRL0, 0x17);
 
 	if (cfg->pll_source == DSI_PLL_SOURCE_NATIVE)
 		DSI_W32(phy, DSIPHY_CMN_CTRL_5, 0x07);
@@ -359,17 +339,29 @@ static void dsi_phy_hw_dphy_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *c
 	u32 glbl_rescode_bot_ctrl = 0;
 	bool split_link_enabled;
 	u32 lanes_per_sublink;
-	u32 cmn_lane_ctrl0 = 0;
-
+#ifdef OPLUS_FEATURE_DISPLAY
+	struct dsi_display *display = get_main_display();
+	if (display == NULL || display->panel == NULL) {
+		DSI_PHY_ERR(phy, "display is null\n");
+		return;
+	}
+#endif
 	/* Alter PHY configurations if data rate less than 1.5GHZ*/
 	if (cfg->bit_clk_rate_hz <= 1500000000)
 		less_than_1500_mhz = true;
 
 	glbl_rescode_top_ctrl = less_than_1500_mhz ? 0x3c : 0x03;
 	glbl_rescode_bot_ctrl = less_than_1500_mhz ? 0x38 : 0x3c;
+
+#ifdef OPLUS_FEATURE_DISPLAY
+	if (oplus_display_ops.dsi_phy_hw_dphy_enable) {
+		oplus_display_ops.dsi_phy_hw_dphy_enable(&glbl_str_swi_cal_sel_ctrl,
+				&glbl_hstx_str_ctrl_0);
+	}
+#else
 	glbl_str_swi_cal_sel_ctrl = 0x00;
 	glbl_hstx_str_ctrl_0 = 0x88;
-
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	split_link_enabled = cfg->split_link.enabled;
 	lanes_per_sublink = cfg->split_link.lanes_per_sublink;
@@ -388,17 +380,6 @@ static void dsi_phy_hw_dphy_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *c
 	/* turn off resync FIFO */
 	DSI_W32(phy, DSIPHY_CMN_RBUF_CTRL, 0x00);
 
-	/*
-	 * Assert power on reset on DSI PHY Analog immeditately
-	 * after 0P9 resume to make sure PHY starts in a
-	 * clean state
-	 */
-	DSI_W32(phy, PHY_CMN_GLBL_DIGTOP_SPARE4, BIT(0));
-	wmb(); /* Ensure that the reset is asserted */
-	mdelay(1);
-	DSI_W32(phy, PHY_CMN_GLBL_DIGTOP_SPARE4, 0x0);
-	wmb(); /* Ensure that the reset is deasserted */
-
 	/* program CMN_CTRL_4 for minor_ver greater than 2 chipsets*/
 	DSI_W32(phy, DSIPHY_CMN_CTRL_4, 0x04);
 
@@ -406,7 +387,16 @@ static void dsi_phy_hw_dphy_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *c
 	dsi_phy_hw_v7_2_lane_swap_config(phy, &cfg->lane_map);
 
 	/* Enable LDO */
+#ifdef OPLUS_FEATURE_DISPLAY
+	if (!strcmp(display->panel->name, "AE096 P 3 A0033 dsc cmd mode panel")) {
+		DSI_W32(phy, DSIPHY_CMN_VREG_CTRL_0, 0x47);
+		DSI_PHY_DBG(phy, "[Custom] modify DSIPHY_CMN_VREG_CTRL_0 is 0x47 \n");
+	} else {
+		DSI_W32(phy, DSIPHY_CMN_VREG_CTRL_0, 0x56);
+	}
+#else
 	DSI_W32(phy, DSIPHY_CMN_VREG_CTRL_0, 0x56);
+#endif /* OPLUS_FEATURE_DISPLAY */
 	DSI_W32(phy, DSIPHY_CMN_VREG_CTRL_1, 0x19);
 	DSI_W32(phy, DSIPHY_CMN_CTRL_3, 0x00);
 	DSI_W32(phy, DSIPHY_CMN_GLBL_STR_SWI_CAL_SEL_CTRL,
@@ -435,8 +425,7 @@ static void dsi_phy_hw_dphy_enable(struct dsi_phy_hw *phy, struct dsi_phy_cfg *c
 	} else {
 		/* Remove power down from all blocks */
 		DSI_W32(phy, DSIPHY_CMN_CTRL_0, 0x7f);
-		cmn_lane_ctrl0 = dsi_phy_hw_calc_cmn_lane_ctrl0(cfg);
-		DSI_W32(phy, DSIPHY_CMN_LANE_CTRL0, cmn_lane_ctrl0);
+		DSI_W32(phy, DSIPHY_CMN_LANE_CTRL0, 0x1F);
 	}
 
 	/* Select full-rate mode */
@@ -752,7 +741,7 @@ void dsi_phy_hw_v7_2_dyn_refresh_config(struct dsi_phy_hw *phy,
 					struct dsi_phy_cfg *cfg, bool is_master)
 {
 	u32 reg;
-	u32 cmn_lane_ctrl0 = dsi_phy_hw_calc_cmn_lane_ctrl0(cfg);
+	bool is_cphy = (cfg->phy_type == DSI_PHY_TYPE_CPHY) ? true : false;
 
 	if (is_master) {
 		DSI_DYN_REF_REG_W(phy->dyn_pll_base, DSI_DYN_REFRESH_PLL_CTRL19,
@@ -778,7 +767,7 @@ void dsi_phy_hw_v7_2_dyn_refresh_config(struct dsi_phy_hw *phy,
 				cfg->timing.lane_v4[12], cfg->timing.lane_v4[13]);
 		DSI_DYN_REF_REG_W(phy->dyn_pll_base, DSI_DYN_REFRESH_PLL_CTRL26,
 				DSIPHY_CMN_CTRL_0, DSIPHY_CMN_LANE_CTRL0, 0x7f,
-				cmn_lane_ctrl0);
+				is_cphy ? 0x17 : 0x1f);
 
 	} else {
 		reg = DSI_R32(phy, DSIPHY_CMN_CLK_CFG1);
@@ -812,7 +801,7 @@ void dsi_phy_hw_v7_2_dyn_refresh_config(struct dsi_phy_hw *phy,
 				cfg->timing.lane_v4[13], 0x7f);
 		DSI_DYN_REF_REG_W(phy->dyn_pll_base, DSI_DYN_REFRESH_PLL_CTRL9,
 				DSIPHY_CMN_LANE_CTRL0, DSIPHY_CMN_CTRL_2,
-				cmn_lane_ctrl0, 0x40);
+				is_cphy ? 0x17 : 0x1f, 0x40);
 		/*
 		 * fill with dummy register writes since controller will blindly
 		 * send these values to DSI PHY.
@@ -820,7 +809,7 @@ void dsi_phy_hw_v7_2_dyn_refresh_config(struct dsi_phy_hw *phy,
 		reg = DSI_DYN_REFRESH_PLL_CTRL11;
 		while (reg <= DSI_DYN_REFRESH_PLL_CTRL29) {
 			DSI_DYN_REF_REG_W(phy->dyn_pll_base, reg, DSIPHY_CMN_LANE_CTRL0,
-					DSIPHY_CMN_CTRL_0, cmn_lane_ctrl0, 0x7f);
+					DSIPHY_CMN_CTRL_0, is_cphy ? 0x17 : 0x1f, 0x7f);
 			reg += 0x4;
 		}
 

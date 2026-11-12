@@ -168,11 +168,9 @@ struct sde_hw_mdp_ops {
 	/**
 	 * intf_audio_select - select the external interface for audio
 	 * @mdp: mdp top context driver
-	 * @audio_core: 1 - DP
-	 *              0 - HDMI
 	 */
-	void (*intf_audio_select)(struct sde_hw_mdp *mdp,
-		int audio_core);
+	void (*intf_audio_select)(struct sde_hw_mdp *mdp);
+
 	/**
 	 * set_mdp_hw_events - enable qdss hardware events for mdp
 	 * @mdp: mdp top context driver

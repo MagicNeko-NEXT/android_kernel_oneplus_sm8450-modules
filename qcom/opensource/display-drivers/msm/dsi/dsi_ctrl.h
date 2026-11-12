@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -339,11 +339,11 @@ struct dsi_ctrl {
 	bool dsi_ctrl_shared;
 	u32 cmd_trigger_line;
 	u32 cmd_trigger_frame;
-	atomic_t cmd_success_line;
-	atomic_t cmd_success_frame;
+	u32 cmd_success_line;
+	u32 cmd_success_frame;
 	u32 cmd_engine_refcount;
 	u32 pending_cmd_flags;
-	atomic64_t cmd_success_ts;
+	ktime_t cmd_success_ts;
 };
 
 /**
@@ -972,6 +972,8 @@ void dsi_ctrl_toggle_error_interrupt_status(struct dsi_ctrl *dsi_ctrl, bool enab
  * @dsi_ctrl:                 DSI controller handle.
  */
 void dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl);
+
+int dsi_ctrl_override_dma_cmd_trig(struct dsi_ctrl *dsi_ctrl, enum dsi_trigger_type type);
 
 /**
  * dsi_ctrl_set_lp2_load() - Add or remove LP2 load on DSI ctrl supplies.

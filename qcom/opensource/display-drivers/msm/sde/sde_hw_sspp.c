@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -14,6 +14,9 @@
 #include "sde_kms.h"
 #include "sde_hw_reg_dma_v1_color_proc.h"
 #include "sde_hw_vbif.h"
+#if defined(PXLW_IRIS_DUAL)
+#include "dsi_iris_api.h"
+#endif
 
 #define SDE_FETCH_CONFIG_RESET_VALUE   0x00000087
 
@@ -230,6 +233,13 @@ static inline int _sspp_subblk_offset(struct sde_hw_pipe *ctx,
 	return rc;
 }
 
+#if defined(PXLW_IRIS_DUAL)
+int iris_sspp_subblk_offset(struct sde_hw_pipe *ctx, int s_id, u32 *idx)
+{
+	return _sspp_subblk_offset(ctx, s_id, idx);
+}
+#endif
+
 static void sde_hw_sspp_update_multirect(struct sde_hw_pipe *ctx,
 		bool enable,
 		enum sde_sspp_multirect_index index,
@@ -372,41 +382,13 @@ static void sde_hw_sspp_setup_ubwc(struct sde_hw_pipe *ctx, struct sde_hw_blk_re
 	}
 }
 
-static u32 sde_hw_sspp_override_unpack(enum sde_color_component_mask color_mask, u32 unpack)
-{
-	u32 shift = 0, val = 0, color_mask_val = 0, result = 0;
-
-	// if color_mask & SDE_COLOR_MASK_ALPHA but color_mask != SDE_COLOR_MASK_ALPHA
-	// then invalid mask (could be sending alpha and another color to same channel)
-	if (color_mask > SDE_COLOR_MASK_ALPHA)
-		return unpack;
-
-	while (unpack > 0) {
-		val = (unpack & 0xff);
-		color_mask_val = BIT(val);
-
-		// if val == C3_ALPHA then color_mask_val = SDE_COLOR_MASK_ALPHA so if
-		// color_mask == SDE_COLOR_MASK_ALPHA then we replace C3_ALPHA with C0_G_Y
-		// in result and rest is replaced with C3_ALPHA
-		if (val == C3_ALPHA)
-			val = C2_R_Cr;
-
-		result |= (((color_mask & color_mask_val) ? val : C3_ALPHA) << shift);
-		unpack >>= 8;
-		shift += 8;
-	}
-
-	return result;
-}
-
 /**
  * Setup source pixel format, flip,
  */
 static void sde_hw_sspp_setup_format(struct sde_hw_pipe *ctx,
 		const struct sde_format *fmt,
 		bool const_alpha_en, u32 flags,
-		enum sde_sspp_multirect_index rect_mode,
-		enum sde_color_component_mask color_mask)
+		enum sde_sspp_multirect_index rect_mode)
 {
 	struct sde_hw_blk_reg_map *c;
 	u32 chroma_samp, unpack, src_format;
@@ -461,9 +443,6 @@ static void sde_hw_sspp_setup_format(struct sde_hw_pipe *ctx,
 
 	unpack = (fmt->element[3] << 24) | (fmt->element[2] << 16) |
 		(fmt->element[1] << 8) | (fmt->element[0] << 0);
-	if (color_mask != SDE_COLOR_MASK_NONE)
-		unpack = sde_hw_sspp_override_unpack(color_mask, unpack);
-
 	src_format |= ((fmt->unpack_count - 1) << 12) |
 		(fmt->unpack_tight << 17) |
 		(fmt->unpack_align_msb << 18);
@@ -1551,6 +1530,14 @@ static void sde_hw_sspp_setup_dgm_csc(struct sde_hw_pipe *ctx,
 	SDE_REG_WRITE(&ctx->hw, offset, op_mode);
 }
 
+#if defined(PXLW_IRIS_DUAL)
+static void sde_hw_sspp_setup_csc_v2(struct sde_hw_pipe *ctx,
+		const struct sde_format *fmt, struct sde_csc_cfg *data)
+{
+	return iris_sde_hw_sspp_setup_csc_v2(ctx, fmt, data);
+}
+#endif
+
 static bool sde_hw_sspp_setup_clk_force_ctrl(struct sde_hw_blk_reg_map *hw,
 		enum sde_clk_ctrl_type clk_ctrl, bool enable)
 {
@@ -1709,7 +1696,14 @@ static void _setup_layer_ops(struct sde_hw_pipe *c,
 
 	if (test_bit(SDE_SSPP_CSC, &features) ||
 		test_bit(SDE_SSPP_CSC_10BIT, &features))
+#if defined(PXLW_IRIS_DUAL)
+	{
+#endif
 		c->ops.setup_csc = sde_hw_sspp_setup_csc;
+#if defined(PXLW_IRIS_DUAL)
+		c->ops.setup_csc_v2 = sde_hw_sspp_setup_csc_v2;
+	}
+#endif
 
 	if (test_bit(SDE_SSPP_DGM_CSC, &features))
 		c->ops.setup_dgm_csc = sde_hw_sspp_setup_dgm_csc;

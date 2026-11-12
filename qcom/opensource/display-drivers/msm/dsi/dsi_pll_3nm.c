@@ -724,7 +724,6 @@ static unsigned long dsi_pll_vco_recalc_rate(struct dsi_pll_resource *pll)
 
 	vco_rate = div_u64(pll_freq, pll_post_div);
 
-	pll->vco_rate = vco_rate;
 	return vco_rate;
 }
 
@@ -765,7 +764,6 @@ static unsigned long dsi_pll_byteclk_recalc_rate(struct clk_hw *hw, unsigned lon
 	else
 		byte_rate = div_u64(byte_rate, 7);
 
-	pll->byteclk_rate = byte_rate;
 	return byte_rate;
 }
 
@@ -813,7 +811,6 @@ static unsigned long dsi_pll_pclk_recalc_rate(struct clk_hw *hw, unsigned long p
 	pclk_div = dsi_pll_get_pclk_div(pll);
 	pclk_rate = div_u64(pclk_rate, pclk_div);
 
-	pll->pclk_rate = pclk_rate;
 	return pclk_rate;
 }
 
@@ -1610,6 +1607,18 @@ static void dsi_pll_assert_pll_reset(struct dsi_pll_resource *rsc)
 void dsi_pll_3nm_trigger_resets_pre_enable(struct dsi_pll_resource *rsc)
 {
 	int i;
+
+	/*
+	 * Assert power on reset on DSI PHY Analog immeditately
+	 * after 0P9 resume to make sure PHY starts in a
+	 * clean state
+	 */
+	dsi_pll_phy_analog_reset(rsc);
+	for (i = 0; i < MAX_DSI_PLL_SLAVE_NUM; i++) {
+		if (!rsc->slave[i])
+			continue;
+		dsi_pll_phy_analog_reset(rsc->slave[i]);
+	}
 
 	/*
 	 * Trigger PLL reset as well to clear out any jitter

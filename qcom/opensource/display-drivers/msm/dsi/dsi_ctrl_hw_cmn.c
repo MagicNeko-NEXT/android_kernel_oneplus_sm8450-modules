@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2025, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -17,6 +17,10 @@
 #include "sde_dbg.h"
 #include "sde_dsc_helper.h"
 #include "sde_vdc_helper.h"
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_ctrl.h"
+bool iris_is_chip_supported(void);
+#endif
 
 #define MMSS_MISC_CLAMP_REG_OFF           0x0014
 #define DSI_CTRL_DYNAMIC_FORCE_ON         (0x23F|BIT(8)|BIT(9)|BIT(11)|BIT(21))
@@ -451,7 +455,7 @@ static void dsi_ctrl_hw_cmn_get_vid_dce_params(struct dsi_mode_info *mode,
  * Set up the video timing parameters for the DSI video mode operation.
  */
 void dsi_ctrl_hw_cmn_set_video_timing(struct dsi_ctrl_hw *ctrl,
-				     struct dsi_host_config *host_config)
+				     struct dsi_mode_info *mode)
 {
 	u32 reg = 0;
 	u32 hs_start = 0;
@@ -459,7 +463,6 @@ void dsi_ctrl_hw_cmn_set_video_timing(struct dsi_ctrl_hw *ctrl,
 	u32 bytes_per_pkt = 0, pkt_per_line = 0, eol_byte_num = 0;
 	u32 vs_start = 0, vs_end = 0;
 	u32 vpos_start = 0, vpos_end, active_v_start, active_v_end, v_total;
-	struct dsi_mode_info *mode = &host_config->video_timing;
 
 	if (dsi_compression_enabled(mode)) {
 		dsi_ctrl_hw_cmn_get_vid_dce_params(mode,
@@ -523,14 +526,18 @@ void dsi_ctrl_hw_cmn_set_video_timing(struct dsi_ctrl_hw *ctrl,
 	reg = ((vpos_end & 0xFFFF) << 16) | (vpos_start & 0xFFFF);
 	DSI_W32(ctrl, DSI_VIDEO_MODE_VSYNC_VPOS, reg);
 
-	/* TODO: HS TIMER value? */
-	DSI_W32(ctrl, DSI_HS_TIMER_CTRL, 0x3FD08);
+	/*
+	* TODO: HS TIMER value?
+	* Setting HS TIMER value assuming maximum
+	* HS transmission time required will be 40ms
+	*/
+	DSI_W32(ctrl, DSI_HS_TIMER_CTRL, 0x4BB80);
 	DSI_W32(ctrl, DSI_MISR_VIDEO_CTRL, 0x10100);
 	DSI_W32(ctrl, DSI_DSI_TIMING_FLUSH, 0x1);
 	DSI_CTRL_HW_DBG(ctrl, "ctrl video parameters updated\n");
 	SDE_EVT32(v_total, h_total);
 
-	if (host_config->esync_enabled) {
+	if (mode->esync_enabled) {
 		/* Skip extended VFP blanking lines over DSI lanes */
 		DSI_W32(ctrl, DSI_VIDEO_MODE_CTRL5, v_total+1);
 		DSI_W32(ctrl, DSI_VIDEO_MODE_CTRL4, 1);
@@ -646,6 +653,15 @@ void dsi_ctrl_hw_cmn_setup_cmd_stream(struct dsi_ctrl_hw *ctrl,
 
 		DSI_CTRL_HW_DBG(ctrl, "reg_ctrl 0x%x reg_ctrl2 0x%x\n",
 				reg_ctrl, reg_ctrl2);
+#if defined(CONFIG_PXLW_IRIS)
+	} else {
+		if (iris_is_chip_supported() && ctrl->widebus_support) {
+			/* fixed for dynamic switching from dsc panel timing into raw timing */
+			reg = DSI_R32(ctrl, DSI_COMMAND_MODE_MDP_CTRL2);
+			reg &= ~BIT(20);
+			DSI_W32(ctrl, DSI_COMMAND_MODE_MDP_CTRL2, reg);
+		}
+#endif /* CONFIG_PXLW_IRIS */
 	}
 
 	/* HS Timer value */
@@ -900,6 +916,11 @@ void dsi_ctrl_hw_cmn_kickoff_command(struct dsi_ctrl_hw *ctrl_hw,
 	reg = DSI_R32(ctrl_hw, DSI_DMA_FIFO_CTRL);
 	reg |= BIT(20);/* Disable write watermark*/
 	reg |= BIT(16);/* Disable read watermark */
+#if defined(CONFIG_PXLW_IRIS)
+	/* set DMA FIFO read watermark to 15/16 full */
+	if (iris_is_chip_supported())
+		reg = 0x33;
+#endif /* CONFIG_PXLW_IRIS */
 
 	DSI_W32(ctrl_hw, DSI_DMA_FIFO_CTRL, reg);
 	DSI_W32(ctrl_hw, DSI_DMA_CMD_OFFSET, cmd->offset);
@@ -1977,11 +1998,13 @@ void dsi_ctrl_hw_cmn_init_cmddma_trig_ctrl(struct dsi_ctrl_hw *ctrl,
 	reg = DSI_R32(ctrl, DSI_TRIG_CTRL);
 	reg &= ~BIT(16); /* Reset DMA_TRG_MUX */
 	reg &= ~(0xF | (0b111 << 17)); /* Reset DMA_TRIGGER_SEL */
-
-	if (do_peripheral_flush)
+	if (do_peripheral_flush) {
 		reg |= BIT(17); /* COMMAND_MODE_DMA_TRIGGER_SEL to periph flush from MDP */
-	else
+	} else if (cfg->force_dma_cmd_trigger) {
+		reg |= (trigger_map[cfg->force_dma_cmd_trigger] & 0xF);
+		SDE_EVT32(cfg->force_dma_cmd_trigger);
+	} else {
 		reg |= (trigger_map[cfg->dma_cmd_trigger] & 0xF);
-
+	}
 	DSI_W32(ctrl, DSI_TRIG_CTRL, reg);
 }

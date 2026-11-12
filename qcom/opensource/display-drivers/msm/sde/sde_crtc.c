@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2014-2021 The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -58,6 +58,17 @@
 #include "sde_color_processing_aiqe.h"
 #include "sde_cesta.h"
 
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "oplus_display_interface.h"
+#include "oplus_display_sysfs_attrs.h"
+
+extern void oplus_sde_cp_crtc_pcc_change(struct drm_crtc *crtc_drm);
+#endif /* OPLUS_FEATURE_DISPLAY */
+
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+#include "oplus_onscreenfingerprint.h"
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 #define SDE_PSTATES_MAX (SDE_STAGE_MAX * 4)
 #define SDE_MULTIRECT_PLANE_MAX (SDE_STAGE_MAX * 2)
 
@@ -66,6 +77,10 @@
 
 /* Wait for at most 2 vsync for spec fence bind */
 #define SPEC_FENCE_TIMEOUT_MS 84
+
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+#endif
 
 struct sde_crtc_custom_events {
 	u32 event;
@@ -103,8 +118,6 @@ static int sde_crtc_mdnie_art_event_handler(struct drm_crtc *crtc_drm,
 	bool en, struct sde_irq_callback *irq);
 static int sde_crtc_copr_status_event_handler(struct drm_crtc *crtc_drm,
 	bool en, struct sde_irq_callback *irq);
-static int sde_crtc_vm_reclaim_handler(struct drm_crtc *crtc_drm,
-	bool en, struct sde_irq_callback *irq);
 
 static int sde_crtc_atomic_set_property(struct drm_crtc *crtc,
 		struct drm_crtc_state *state,
@@ -127,7 +140,6 @@ static struct sde_crtc_custom_events custom_events[] = {
 	{DRM_EVENT_FRAME_DONE, sde_crtc_framedone_event_handler},
 	{DRM_EVENT_MDNIE_ART, sde_crtc_mdnie_art_event_handler},
 	{DRM_EVENT_COPR, sde_crtc_copr_status_event_handler},
-	{DRM_EVENT_VM_RECLAIM, sde_crtc_vm_reclaim_handler},
 };
 
 /* default input fence timeout, in ms */
@@ -412,6 +424,14 @@ void sde_crtc_get_mixer_resolution(struct drm_crtc *crtc, struct drm_crtc_state 
 		*height = mode->vdisplay;
 	}
 }
+
+#ifdef OPLUS_FEATURE_DISPLAY
+struct sde_kms *_sde_crtc_get_kms_(struct drm_crtc *crtc)
+{
+	return _sde_crtc_get_kms(crtc);
+}
+EXPORT_SYMBOL(_sde_crtc_get_kms_);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 int sde_crtc_get_lb_layout_split(struct drm_crtc *crtc, struct drm_crtc_state *crtc_state)
 {
@@ -1211,6 +1231,7 @@ static int _sde_crtc_set_roi_v1(struct drm_crtc_state *state,
 
 	if (!usr_ptr) {
 		SDE_DEBUG("crtc%d: rois cleared\n", DRMID(crtc));
+		SDE_EVT32(0xdead, 0xabcd, 0xabcd);
 		return 0;
 	}
 
@@ -1220,9 +1241,11 @@ static int _sde_crtc_set_roi_v1(struct drm_crtc_state *state,
 	}
 
 	SDE_DEBUG("crtc%d: num_rects %d\n", DRMID(crtc), roi_v1.num_rects);
+	SDE_EVT32(0xabcd, roi_v1.num_rects);
 
 	if (roi_v1.num_rects == 0) {
 		SDE_DEBUG("crtc%d: rois cleared\n", DRMID(crtc));
+		SDE_EVT32(0xabcd, 0xabcd);
 		return 0;
 	}
 
@@ -1244,24 +1267,12 @@ static int _sde_crtc_set_roi_v1(struct drm_crtc_state *state,
 			 * it will have the same behavior with before.
 			 */
 			cstate->user_roi_list.spr_roi[i] = roi_v1.roi[i];
-		SDE_DEBUG("crtc%d: roi%d: roi (%d,%d) (%d,%d)\n",
-				DRMID(crtc), i,
+		SDE_EVT32(DRMID(crtc),
 				cstate->user_roi_list.roi[i].x1,
 				cstate->user_roi_list.roi[i].y1,
 				cstate->user_roi_list.roi[i].x2,
 				cstate->user_roi_list.roi[i].y2);
-		SDE_EVT32_VERBOSE(DRMID(crtc),
-				cstate->user_roi_list.roi[i].x1,
-				cstate->user_roi_list.roi[i].y1,
-				cstate->user_roi_list.roi[i].x2,
-				cstate->user_roi_list.roi[i].y2);
-		SDE_DEBUG("crtc%d, roi_feature_flags %d: spr roi%d: spr roi (%d,%d) (%d,%d)\n",
-				DRMID(crtc), roi_v1.roi_feature_flags, i,
-				roi_v1.spr_roi[i].x1,
-				roi_v1.spr_roi[i].y1,
-				roi_v1.spr_roi[i].x2,
-				roi_v1.spr_roi[i].y2);
-		SDE_EVT32_VERBOSE(DRMID(crtc), roi_v1.roi_feature_flags,
+		SDE_EVT32(DRMID(crtc), roi_v1.roi_feature_flags,
 				roi_v1.spr_roi[i].x1,
 				roi_v1.spr_roi[i].y1,
 				roi_v1.spr_roi[i].x2,
@@ -2076,11 +2087,8 @@ static void _sde_crtc_set_src_split_order(struct drm_crtc *crtc,
 			if ((!nxt_pstate)
 				    || (nxt_pstate->stage != cur_pstate->stage)
 				    || (nxt_pstate->sde_pstate->layout !=
-					cur_pstate->sde_pstate->layout)) {
-				mutex_lock(&sde_crtc->property_info.property_lock);
+					cur_pstate->sde_pstate->layout))
 				cur_pstate->sde_pstate->pipe_order_flags = 0;
-				mutex_unlock(&sde_crtc->property_info.property_lock);
-			}
 
 			continue;
 		}
@@ -2105,10 +2113,8 @@ static void _sde_crtc_set_src_split_order(struct drm_crtc *crtc,
 			swap(prv_pstate, cur_pstate);
 		}
 
-		mutex_lock(&sde_crtc->property_info.property_lock);
 		cur_pstate->sde_pstate->pipe_order_flags = SDE_SSPP_RIGHT;
 		prv_pstate->sde_pstate->pipe_order_flags = 0;
-		mutex_unlock(&sde_crtc->property_info.property_lock);
 	}
 
 	for (i = 0; i < cnt; i++) {
@@ -3317,14 +3323,16 @@ enum sde_intf_mode sde_crtc_get_intf_mode(struct drm_crtc *crtc,
 		struct drm_crtc_state *cstate)
 {
 	struct drm_encoder *encoder;
+	struct sde_crtc *sde_crtc;
 
 	if (!crtc || !crtc->dev || !cstate) {
 		SDE_ERROR("invalid crtc\n");
 		return INTF_MODE_NONE;
 	}
 
+	sde_crtc = to_sde_crtc(crtc);
 	drm_for_each_encoder_mask(encoder, crtc->dev,
-			cstate->encoder_mask) {
+			sde_crtc->cached_encoder_mask) {
 		/* continue if copy encoder is encountered */
 		if (sde_crtc_state_in_clone_mode(encoder, cstate) ||
 			sde_encoder_is_loopback_display(encoder))
@@ -3731,6 +3739,14 @@ void sde_crtc_complete_commit(struct drm_crtc *crtc,
 			cont_splash_enabled = true;
 	}
 
+#ifdef OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT
+	if (oplus_ofp_is_supported()) {
+		if (oplus_ofp_need_pcc_change(sde_crtc)) {
+			oplus_sde_cp_crtc_pcc_change(crtc);
+		}
+	}
+#endif /* OPLUS_FEATURE_DISPLAY_ONSCREENFINGERPRINT */
+
 	/* with cesta, clk & bw voting happens through encoder */
 	if (sde_crtc->cesta_client) {
 		drm_for_each_encoder_mask(encoder, crtc->dev, crtc->state->encoder_mask) {
@@ -3745,8 +3761,6 @@ void sde_crtc_complete_commit(struct drm_crtc *crtc,
 
 	if ((crtc->state->active_changed || cont_splash_enabled) && crtc->state->active)
 		sde_crtc_event_notify(crtc, DRM_EVENT_CRTC_POWER, &power_on, sizeof(u32));
-
-	sde_crtc->kickoff_in_progress = false;
 }
 
 /**
@@ -3935,7 +3949,7 @@ static int _sde_crtc_set_dest_scaler(struct sde_crtc *sde_crtc,
 			scaler_v2.enable, scaler_v2.dir_en, scaler_v2.de.enable,
 			scaler_v2.src_width[0], scaler_v2.src_height[0],
 			scaler_v2.dst_width, scaler_v2.dst_height);
-		SDE_EVT32(DRMID(&sde_crtc->base),
+		SDE_EVT32_VERBOSE(DRMID(&sde_crtc->base),
 			scaler_v2.enable, scaler_v2.dir_en, scaler_v2.de.enable,
 			scaler_v2.src_width[0], scaler_v2.src_height[0],
 			scaler_v2.dst_width, scaler_v2.dst_height);
@@ -3944,7 +3958,7 @@ static int _sde_crtc_set_dest_scaler(struct sde_crtc *sde_crtc,
 			i, ds_cfg_usr->index, ds_cfg_usr->flags,
 			ds_cfg_usr->lm_width, ds_cfg_usr->lm_height,
 			ds_cfg_usr->merge_mode);
-		SDE_EVT32(DRMID(&sde_crtc->base), i, ds_cfg_usr->index,
+		SDE_EVT32_VERBOSE(DRMID(&sde_crtc->base), i, ds_cfg_usr->index,
 			ds_cfg_usr->flags, ds_cfg_usr->lm_width,
 			ds_cfg_usr->lm_height, ds_cfg_usr->merge_mode);
 	}
@@ -3995,7 +4009,6 @@ static int _sde_crtc_check_dest_scaler_cfg(struct drm_crtc *crtc,
 	struct sde_crtc *sde_crtc;
 	struct sde_rect conn_roi = {0};
 	struct sde_rect crtc_roi = {0};
-	bool pu_enable = false;
 
 	sde_crtc = to_sde_crtc(crtc);
 	crtc_state = &cstate->base;
@@ -4003,16 +4016,17 @@ static int _sde_crtc_check_dest_scaler_cfg(struct drm_crtc *crtc,
 	c_conn_state = _sde_crtc_get_sde_connector_state(crtc, crtc_state->state);
 
 	if (c_conn_state == NULL)
-		return -EINVAL;
+		return 0;
 
-	if (c_conn_state->rois.num_rects || cstate->user_roi_list.num_rects) {
+	if (c_conn_state->rois.num_rects)
 		sde_kms_rect_merge_rectangles(&c_conn_state->rois, &conn_roi);
+
+	if (cstate->user_roi_list.num_rects)
 		sde_kms_rect_merge_rectangles(&cstate->user_roi_list, &crtc_roi);
-		pu_enable = true;
-	}
 
 	if (cfg->flags & SDE_DRM_DESTSCALER_SCALE_UPDATE ||
 		cfg->flags & SDE_DRM_DESTSCALER_ENHANCER_UPDATE) {
+		bool pu_enable = cfg->flags & SDE_DRM_DESTSCALER_PU_ENABLE;
 
 		/**
 		 * Scaler src and dst width shouldn't exceed the maximum
@@ -4027,10 +4041,12 @@ static int _sde_crtc_check_dest_scaler_cfg(struct drm_crtc *crtc,
 			!cfg->scl3_cfg.src_width[0] ||
 			!cfg->scl3_cfg.dst_width ||
 			(pu_enable && cfg->scl3_cfg.dst_width != hdisplay) ||
-			(pu_enable && cfg->scl3_cfg.dst_height != conn_roi.h) ||
-			(pu_enable && cfg->scl3_cfg.src_height[0] != crtc_roi.h) ||
-			(!pu_enable && (cfg->scl3_cfg.dst_width != hdisplay ||
-				cfg->scl3_cfg.dst_height != mode->vdisplay))) {
+			(pu_enable && conn_roi.h != 0 && cfg->scl3_cfg.dst_height != conn_roi.h) ||
+			(pu_enable && crtc_roi.h != 0 && cfg->scl3_cfg.src_height[0]
+					!= crtc_roi.h) ||
+			(!pu_enable &&
+			(cfg->scl3_cfg.dst_width != hdisplay ||
+			cfg->scl3_cfg.dst_height != mode->vdisplay))) {
 			SDE_ERROR("crtc%d: ", crtc->base.id);
 			SDE_ERROR("src_wxh(%dx%d) dst(%dx%d) display(%dx%d)",
 				cfg->scl3_cfg.src_width[0],
@@ -4251,6 +4267,12 @@ static int _sde_crtc_check_dest_scaler_data(struct drm_crtc *crtc,
 		goto err;
 
 disable:
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported() && (iris_get_pq_disable_val() & 0x01) > 0) {
+		//need to disable detail enhancer in dual memc
+		_sde_crtc_check_dest_scaler_data_disable(crtc, cstate, 0);
+	} else
+#endif /* CONFIG_PXLW_IRIS */
 	_sde_crtc_check_dest_scaler_data_disable(crtc, cstate, num_ds_enable);
 	goto end;
 
@@ -4525,7 +4547,6 @@ static inline bool _is_vid_power_on_frame(struct drm_crtc *crtc)
 static bool _sde_crtc_wait_for_fences(struct drm_crtc *crtc)
 {
 	struct sde_crtc *sde_crtc = to_sde_crtc(crtc);
-	struct drm_encoder *encoder = NULL;
 	bool ipcc_input_signal_wait = false;
 	struct dma_fence *dma_hw_fences[MAX_HW_FENCES] = {0};
 	int num_hw_fences = 0;
@@ -4536,7 +4557,6 @@ static bool _sde_crtc_wait_for_fences(struct drm_crtc *crtc)
 	enum sde_crtc_vm_req vm_req;
 	bool disable_hw_fences = false;
 	bool trigger_sw_override = false;
-	bool video_psr_support = false;
 
 	SDE_DEBUG("\n");
 
@@ -4547,6 +4567,9 @@ static bool _sde_crtc_wait_for_fences(struct drm_crtc *crtc)
 	hw_ctl = _sde_crtc_get_hw_ctl(crtc);
 
 	SDE_ATRACE_BEGIN("plane_wait_input_fence");
+#ifdef OPLUS_FEATURE_DISPLAY
+	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	trigger_sw_override = sde_kms->catalog->is_vrr_hw_fence_enable &&
 		!sde_kms->catalog->hw_fence_rev;
@@ -4558,23 +4581,10 @@ static bool _sde_crtc_wait_for_fences(struct drm_crtc *crtc)
 		return false;
 	}
 
-	drm_for_each_encoder_mask(encoder, crtc->dev, crtc->state->encoder_mask) {
-		if (sde_encoder_in_clone_mode(encoder))
-			continue;
-
-		if (sde_encoder_is_built_in_display(encoder)) {
-			video_psr_support = sde_encoder_is_psr_supported(encoder);
-			break;
-		}
-	}
-
 	/* if this is the last frame on vm transition, disable hw fences */
-	if (!video_psr_support) {
-		vm_req = sde_crtc_get_property(to_sde_crtc_state(crtc->state),
-				CRTC_PROP_VM_REQ_STATE);
-		if (vm_req == VM_REQ_RELEASE)
-			disable_hw_fences = true;
-	}
+	vm_req = sde_crtc_get_property(to_sde_crtc_state(crtc->state), CRTC_PROP_VM_REQ_STATE);
+	if (vm_req == VM_REQ_RELEASE)
+		disable_hw_fences = true;
 
 	/* update ctl hw to wait for ipcc input signal before fetch */
 	if (test_bit(HW_FENCE_IN_FENCES_ENABLE, sde_crtc->hwfence_features_mask) ||
@@ -4899,6 +4909,12 @@ static void _sde_crtc_atomic_begin(struct drm_crtc *crtc,
 		encoder = NULL;
 		drm_for_each_encoder_mask(encoder, dev, crtc->state->encoder_mask) {
 			if (sde_encoder_in_clone_mode(encoder))
+				continue;
+			/* For cmd mode, with cesta immediate mode enablement, update perf votes
+			* during crtc commit kickoff. This will delay the new vote request and
+			* allows intra frame idle entry.
+			*/
+			if (sde_encoder_check_curr_mode(encoder, MSM_DISPLAY_CMD_MODE))
 				continue;
 
 			/* For cmd mode, with cesta immediate mode enablement, update perf votes
@@ -5519,6 +5535,7 @@ void sde_crtc_commit_kickoff(struct drm_crtc *crtc,
 
 		sde_encoder_kickoff(encoder, true);
 	}
+	sde_crtc->kickoff_in_progress = false;
 
 	/* store the event after frame trigger */
 	if (sde_crtc->event) {
@@ -5766,6 +5783,8 @@ void sde_crtc_reset_sw_state(struct drm_crtc *crtc)
 	set_bit(SDE_CRTC_DIRTY_DIM_LAYERS, &sde_crtc->revalidate_mask);
 	if (cstate->num_ds_enabled)
 		set_bit(SDE_CRTC_DIRTY_DEST_SCALER, cstate->dirty);
+
+	SDE_EVT32(0xcccc);
 }
 
 static void sde_crtc_post_ipc(struct drm_crtc *crtc)
@@ -5969,6 +5988,10 @@ static void sde_crtc_disable(struct drm_crtc *crtc)
 
 	/* Try to disable uidle */
 	sde_core_perf_crtc_update_uidle(crtc, false);
+
+	for (i = 0; i < SDE_SYS_CACHE_MAX; i++)
+		sde_crtc->new_perf.llcc_active[i] = 0;
+	sde_core_perf_crtc_update_llcc(crtc);
 
 	if (atomic_read(&sde_crtc->frame_pending)) {
 		SDE_ERROR("crtc%d frame_pending%d\n", crtc->base.id,
@@ -7435,6 +7458,11 @@ static void sde_crtc_install_properties(struct drm_crtc *crtc,
 			ARRAY_SIZE(e_secure_level), 0,
 			CRTC_PROP_SECURITY_LEVEL);
 
+#ifdef OPLUS_FEATURE_DISPLAY
+	msm_property_install_range(&sde_crtc->property_info,"CRTC_CUST",
+		0x0, 0, INT_MAX, 0, CRTC_PROP_CUSTOM);
+#endif /* OPLUS_FEATURE_DISPLAY */
+
 	if (test_bit(SDE_SYS_CACHE_DISP, catalog->sde_sys_cache_type_map))
 		msm_property_install_enum(&sde_crtc->property_info, "cache_state",
 			0x0, 0, e_cache_state,
@@ -7444,8 +7472,13 @@ static void sde_crtc_install_properties(struct drm_crtc *crtc,
 	if (test_bit(SDE_FEATURE_DIM_LAYER, catalog->features)) {
 		msm_property_install_volatile_range(&sde_crtc->property_info,
 			"dim_layer_v1", 0x0, 0, ~0, 0, CRTC_PROP_DIM_LAYER_V1);
+#ifdef OPLUS_FEATURE_DISPLAY
+		sde_kms_info_add_keyint(info, "dim_layer_v1_max_layers",
+				SDE_MAX_DIM_LAYERS-1);
+#else /* OPLUS_FEATURE_DISPLAY */
 		sde_kms_info_add_keyint(info, "dim_layer_v1_max_layers",
 				SDE_MAX_DIM_LAYERS);
+#endif /* OPLUS_FEATURE_DISPLAY */
 	}
 
 	if (test_bit(SDE_MDP_HW_FLUSH_SYNC, &catalog->mdp[0].features)) {
@@ -7585,16 +7618,28 @@ static int sde_crtc_atomic_set_property(struct drm_crtc *crtc,
 	int idx, ret;
 	uint64_t fence_user_fd;
 	uint64_t __user prev_user_fd;
+#ifdef OPLUS_FEATURE_DISPLAY
+	struct msm_drm_private *priv;
 
+	if (!crtc || !state || !property || !crtc->dev || !crtc->dev->dev_private) {
+		SDE_ERROR("invalid argument(s)\n");
+		return -EINVAL;
+	}
+	priv = crtc->dev->dev_private;
+#else /* OPLUS_FEATURE_DISPLAY */
 	if (!crtc || !state || !property) {
 		SDE_ERROR("invalid argument(s)\n");
 		return -EINVAL;
 	}
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 	sde_crtc = to_sde_crtc(crtc);
 	cstate = to_sde_crtc_state(state);
 
 	SDE_ATRACE_BEGIN("sde_crtc_atomic_set_property");
+#ifdef OPLUS_FEATURE_DISPLAY
+	mutex_lock(&priv->dspp_lock);
+#endif /* OPLUS_FEATURE_DISPLAY */
 	/* check with cp property system first */
 	ret = sde_cp_crtc_set_property(crtc, state, property, val);
 	if (ret != -ENOENT)
@@ -7701,6 +7746,9 @@ exit:
 				property->base.id, val);
 	}
 
+#ifdef OPLUS_FEATURE_DISPLAY
+	mutex_unlock(&priv->dspp_lock);
+#endif /* OPLUS_FEATURE_DISPLAY */
 	SDE_ATRACE_END("sde_crtc_atomic_set_property");
 	return ret;
 }
@@ -9275,12 +9323,6 @@ static int sde_crtc_vm_release_handler(struct drm_crtc *crtc_drm,
 	return 0;
 }
 
-static int sde_crtc_vm_reclaim_handler(struct drm_crtc *crtc_drm,
-	bool en, struct sde_irq_callback *irq)
-{
-	return 0;
-}
-
 static int sde_crtc_frame_data_interrupt_handler(struct drm_crtc *crtc_drm,
 	bool en, struct sde_irq_callback *irq)
 {
@@ -9467,13 +9509,6 @@ void _sde_crtc_vm_release_notify(struct drm_crtc *crtc)
 	uint32_t val = 1;
 
 	sde_crtc_event_notify(crtc, DRM_EVENT_VM_RELEASE, &val, sizeof(uint32_t));
-}
-
-void _sde_crtc_vm_reclaim_notify(struct drm_crtc *crtc)
-{
-	uint32_t val = 1;
-
-	sde_crtc_event_notify(crtc, DRM_EVENT_VM_RECLAIM, &val, sizeof(val));
 }
 
 int sde_crtc_calc_vpadding_param(struct drm_crtc_state *state, u32 crtc_y, uint32_t crtc_h,

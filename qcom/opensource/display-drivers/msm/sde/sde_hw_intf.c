@@ -11,6 +11,9 @@
 #include "sde_hw_catalog.h"
 #include "sde_hw_intf.h"
 #include "sde_dbg.h"
+#if defined(CONFIG_PXLW_IRIS)
+#include "dsi_iris_api.h"
+#endif
 
 #define INTF_TIMING_ENGINE_EN           0x000
 #define INTF_CONFIG                     0x004
@@ -465,20 +468,6 @@ static void sde_hw_intf_reset_counter(struct sde_hw_intf *ctx)
 	SDE_REG_WRITE(c, INTF_LINE_COUNT, BIT(31));
 }
 
-static u64 sde_hw_intf_get_panel_vsync_timestamp(struct sde_hw_intf *ctx)
-{
-	struct sde_hw_blk_reg_map *c = &ctx->hw;
-	u32 timestamp_lo, timestamp_hi;
-	u64 timestamp = 0;
-
-	timestamp_hi = SDE_REG_READ(c, INTF_VSYNC_TIMESTAMP1);
-	timestamp_lo = SDE_REG_READ(c, INTF_VSYNC_TIMESTAMP0);
-	timestamp = timestamp_hi;
-	timestamp = (timestamp << 32) | timestamp_lo;
-
-	return timestamp;
-}
-
 static u64 sde_hw_intf_get_vsync_timestamp(struct sde_hw_intf *ctx, bool is_vid)
 {
 	struct sde_hw_blk_reg_map *c = &ctx->hw;
@@ -520,7 +509,6 @@ static void sde_hw_intf_setup_timing_engine(struct sde_hw_intf *ctx,
 	u32 display_data_hctl = 0, active_data_hctl = 0;
 	u32 data_width;
 	bool dp_intf = false;
-	bool hdmi_intf = false;
 	u32 alignment = 0;
 
 	/* read interface_cfg */
@@ -528,9 +516,6 @@ static void sde_hw_intf_setup_timing_engine(struct sde_hw_intf *ctx,
 
 	if (ctx->cap->type == INTF_EDP || ctx->cap->type == INTF_DP)
 		dp_intf = true;
-
-	if (ctx->cap->type == INTF_HDMI)
-		hdmi_intf = true;
 
 	hsync_period = p->hsync_pulse_width + p->h_back_porch + p->width +
 			p->h_front_porch;
@@ -607,7 +592,7 @@ static void sde_hw_intf_setup_timing_engine(struct sde_hw_intf *ctx,
 
 	active_hctl = (active_h_end << 16) | active_h_start;
 
-	if (dp_intf || hdmi_intf) {
+	if (dp_intf) {
 		display_hctl = active_hctl;
 
 		if (p->compression_en) {
@@ -623,7 +608,7 @@ static void sde_hw_intf_setup_timing_engine(struct sde_hw_intf *ctx,
 			&intf_cfg2);
 
 	den_polarity = 0;
-	if (hdmi_intf) {
+	if (ctx->cap->type == INTF_HDMI) {
 		hsync_polarity = p->yres >= 720 ? 0 : 1;
 		vsync_polarity = p->yres >= 720 ? 0 : 1;
 	} else if (ctx->cap->type == INTF_DP) {
@@ -676,8 +661,7 @@ static void sde_hw_intf_setup_timing_engine(struct sde_hw_intf *ctx,
 		intf_cfg2 |= BIT(23);
 	}
 
-	if (!(dp_intf || hdmi_intf) &&
-		ctx->cap->features & BIT(SDE_INTF_PERIPHERAL_FLUSH))
+	if (!dp_intf && ctx->cap->features & BIT(SDE_INTF_PERIPHERAL_FLUSH))
 		intf_cfg2 |= BIT(24);
 
 	if (ctx->cap->features & BIT(SDE_INTF_PROG_DYNREF))
@@ -966,13 +950,6 @@ static void sde_hw_intf_v1_get_status(
 
 	s->is_en = SDE_REG_READ(c, INTF_STATUS) & BIT(0);
 	s->is_prog_fetch_en = (SDE_REG_READ(c, INTF_CONFIG) & BIT(31));
-	s->intf_status_val = SDE_REG_READ(c, INTF_STATUS);
-
-	if (intf->cap->features & BIT(SDE_INTF_ESYNC)) {
-		s->esync_vsync_counter = SDE_REG_READ(c, INTF_ESYNC_VSYNC_COUNT);
-		s->esync_emsync_counter = SDE_REG_READ(c, INTF_ESYNC_EMSYNC_COUNT);
-	}
-
 	if (s->is_en) {
 		s->frame_count = sde_hw_intf_get_frame_count(intf);
 		s->line_count = SDE_REG_READ(c, INTF_LINE_COUNT) & 0xffff;
@@ -981,7 +958,6 @@ static void sde_hw_intf_v1_get_status(
 		s->frame_count = 0;
 	}
 }
-
 static void sde_hw_intf_setup_misr(struct sde_hw_intf *intf,
 						bool enable, u32 frame_count)
 {
@@ -1194,6 +1170,7 @@ static int sde_hw_intf_enable_te(struct sde_hw_intf *intf, bool enable)
 		return -EINVAL;
 
 	c = &intf->hw;
+	val = SDE_REG_READ(c, INTF_TEAR_TEAR_CHECK_EN);
 
 	if (enable)
 		val |= BIT(0);
@@ -1423,6 +1400,11 @@ static void sde_hw_intf_enable_compressed_input(struct sde_hw_intf *intf,
 	c = &intf->hw;
 	intf_cfg2 = SDE_REG_READ(c, INTF_CONFIG2);
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_chip_supported())
+	/* fixed for dynamic switching from dsc panel timing into raw timing */
+		intf_cfg2 &= ~BIT(12);
+#endif
 	_check_and_set_comp_bit(intf, dsc_4hs_merge, compression_en,
 			&intf_cfg2);
 
@@ -1572,11 +1554,8 @@ static void _setup_intf_ops(struct sde_hw_intf_ops *ops,
 	if (cap & BIT(SDE_INTF_RESET_COUNTER))
 		ops->reset_counter = sde_hw_intf_reset_counter;
 
-	if (cap & (BIT(SDE_INTF_PANEL_VSYNC_TS) | BIT(SDE_INTF_MDP_VSYNC_TS))) {
+	if (cap & (BIT(SDE_INTF_PANEL_VSYNC_TS) | BIT(SDE_INTF_MDP_VSYNC_TS)))
 		ops->get_vsync_timestamp = sde_hw_intf_get_vsync_timestamp;
-		ops->get_panel_vsync_timestamp =
-					sde_hw_intf_get_panel_vsync_timestamp;
-	}
 
 	if (mdss_cap & BIT(SDE_MDP_DUAL_DPU_SYNC)) {
 		ops->setup_dpu_sync_prog_intf_offset =

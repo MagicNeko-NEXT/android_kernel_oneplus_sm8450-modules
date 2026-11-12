@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -42,8 +42,6 @@
 #include "dp_display.h"
 #include "dp_drm.h"
 #include "dp_mst_drm.h"
-#include "hdmi_display.h"
-#include "hdmi_drm.h"
 
 #include "sde_kms.h"
 #include "sde_core_irq.h"
@@ -73,8 +71,20 @@
 #include <linux/gunyah/gh_irq_lend.h>
 #endif
 
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+#include "dsi_iris_api.h"
+#endif
+
 #define CREATE_TRACE_POINTS
 #include "sde_trace.h"
+#ifdef OPLUS_FEATURE_DISPLAY
+#include "oplus_display_sysfs_attrs.h"
+#include "oplus_display_interface.h"
+#endif /* OPLUS_FEATURE_DISPLAY */
+
+#ifdef OPLUS_FEATURE_DISPLAY_ADFR
+#include "oplus_adfr.h"
+#endif /* OPLUS_FEATURE_DISPLAY_ADFR */
 
 #if IS_ENABLED(CONFIG_SMMU_PROXY)
 #include <smmu-proxy/include/uapi/linux/qti-smmu-proxy.h>
@@ -850,17 +860,8 @@ static int _sde_kms_release_shared_buffer(unsigned long mem_addr,
 	#endif
 #endif
 
-	for (pfn_idx = pfn_start; pfn_idx < pfn_end; pfn_idx++) {
-#if IS_ENABLED(CONFIG_ARM64)
-		/*
-		 * A no-map splash region is not in the linear map: handing its
-		 * pages to the page allocator would fault on first use.
-		 */
-		if (!pfn_is_map_memory(pfn_idx))
-			continue;
-#endif
+	for (pfn_idx = pfn_start; pfn_idx < pfn_end; pfn_idx++)
 		free_reserved_page(pfn_to_page(pfn_idx));
-	}
 
 	return ret;
 
@@ -1100,6 +1101,11 @@ static void _sde_kms_drm_check_dpms(struct drm_atomic_state *old_state,
 			old_fps = 0;
 			old_mode = DRM_PANEL_EVENT_BLANK;
 		}
+#ifdef OPLUS_FEATURE_DISPLAY
+		if (oplus_display_ops.kms_drm_check_dpms_pre) {
+			oplus_display_ops.kms_drm_check_dpms_pre(old_fps, new_fps);
+		}
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 		if ((old_mode != new_mode) || (old_fps != new_fps)) {
 			c_conn = to_sde_connector(connector);
@@ -1136,6 +1142,11 @@ static void _sde_kms_drm_check_dpms(struct drm_atomic_state *old_state,
 			notification.notif_data.early_trigger = is_pre_commit;
 			panel_event_notification_trigger(panel_type,
 					&notification);
+#ifdef OPLUS_FEATURE_DISPLAY
+			if (oplus_display_ops.kms_drm_check_dpms_post) {
+				oplus_display_ops.kms_drm_check_dpms_post(c_conn, is_pre_commit);
+			}
+#endif /* OPLUS_FEATURE_DISPLAY */
 		}
 	}
 
@@ -1251,16 +1262,6 @@ int sde_kms_vm_primary_prepare_commit(struct sde_kms *sde_kms,
 	new_cstate = drm_atomic_get_new_crtc_state(state, crtc);
 	cstate = to_sde_crtc_state(new_cstate);
 	vm_req = sde_crtc_get_property(cstate, CRTC_PROP_VM_REQ_STATE);
-	if (vm_req != VM_REQ_NONE) {
-		drm_for_each_encoder_mask(encoder, crtc->dev,
-						crtc->state->encoder_mask) {
-			if (sde_encoder_in_clone_mode(encoder))
-				continue;
-
-			sde_encoder_vhm_trusted_vm_prepare(encoder, vm_req);
-		}
-	}
-
 	if (vm_req != VM_REQ_ACQUIRE)
 		return 0;
 
@@ -1373,12 +1374,16 @@ static void sde_kms_prepare_commit(struct msm_kms *kms,
 	rc = pm_runtime_resume_and_get(sde_kms->dev->dev);
 	if (rc < 0) {
 		SDE_ERROR("failed to enable power resources %d\n", rc);
+#ifdef OPLUS_FEATURE_DISPLAY
+		EXCEPTION_TRACKPOINT_REPORT("DisplayDriverID@@%d$$failed to enable power resources %d\n",
+				OPLUS_DISP_Q_ERROR_DCDC_CHECK_FAIL, rc);
+#endif /* OPLUS_FEATURE_DISPLAY */
 		SDE_EVT32(rc, SDE_EVTLOG_ERROR);
 		goto end;
 	}
 
 	if (sde_kms->first_kickoff) {
-		/* find if it's power on commit */
+		/* find if it's power on commit as max regbus vote is not needed in power on*/
 		for_each_new_crtc_in_state(state, crtc, cstate, i) {
 			if (!crtc->state->active || !crtc->state->active_changed)
 				power_on_commit = false;
@@ -1538,26 +1543,6 @@ static void sde_kms_cancel_delayed_work(struct drm_crtc *crtc)
 	}
 }
 
-static void sde_kms_vm_force_disable_idle_pc(struct sde_kms *sde_kms, enum sde_crtc_vm_req vm_req)
-{
-	struct drm_device *dev;
-	struct drm_encoder *enc;
-	bool enable;
-
-	if (!sde_kms || vm_req == VM_REQ_NONE)
-		return;
-
-	dev = sde_kms->dev;
-	enable = (vm_req == VM_REQ_RELEASE) ? false : true;
-
-	drm_for_each_encoder(enc, dev) {
-		if (!sde_encoder_is_dsi_display(enc))
-			continue;
-
-		sde_encoder_control_idle_pc(enc, enable);
-	}
-}
-
 int sde_kms_vm_pre_release(struct sde_kms *sde_kms,
 	struct drm_atomic_state *state, bool is_primary)
 {
@@ -1664,9 +1649,6 @@ int sde_kms_vm_primary_post_commit(struct sde_kms *sde_kms,
 	new_cstate = drm_atomic_get_new_crtc_state(state, crtc);
 	cstate = to_sde_crtc_state(new_cstate);
 	vm_req = sde_crtc_get_property(cstate, CRTC_PROP_VM_REQ_STATE);
-
-	sde_kms_vm_force_disable_idle_pc(sde_kms, vm_req);
-
 	if (vm_req != VM_REQ_RELEASE)
 		return 0;
 
@@ -1698,8 +1680,6 @@ int sde_kms_vm_primary_post_commit(struct sde_kms *sde_kms,
 
 	/* release HW */
 	if (vm_ops->vm_release) {
-		if (sde_kms->vm)
-			sde_kms->vm->crtc = crtc;
 		rc = vm_ops->vm_release(sde_kms);
 		if (rc)
 			SDE_ERROR("sde vm assign failed, rc=%d\n", rc);
@@ -1966,30 +1946,7 @@ static int _sde_kms_get_displays(struct sde_kms *sde_kms)
 			sde_kms->lb_displays[i] =  sde_kms->dsi_displays[i];
 	}
 
-	/* hdmi */
-	sde_kms->hdmi_displays = NULL;
-	sde_kms->hdmi_display_count = hdmi_display_get_num_of_displays(sde_kms->dev);
-	if (sde_kms->hdmi_display_count) {
-		sde_kms->hdmi_displays = kcalloc(sde_kms->hdmi_display_count,
-				sizeof(void *),
-				GFP_KERNEL);
-		if (!sde_kms->hdmi_displays) {
-			SDE_ERROR("failed to allocate hdmi displays\n");
-			goto exit_deinit_hdmi;
-		}
-		sde_kms->hdmi_display_count =
-			hdmi_display_get_displays(sde_kms->dev,
-					sde_kms->hdmi_displays,
-					sde_kms->hdmi_display_count);
-	}
-
-
 	return 0;
-
-exit_deinit_hdmi:
-	kfree(sde_kms->hdmi_displays);
-	sde_kms->hdmi_display_count = 0;
-	sde_kms->hdmi_displays = NULL;
 
 exit_deinit_lb:
 	kfree(sde_kms->lb_displays);
@@ -2034,103 +1991,6 @@ static void _sde_kms_release_displays(struct sde_kms *sde_kms)
 	sde_kms->dsi_display_count = 0;
 }
 
-int setup_hdmi_displays(struct drm_device *dev,
-						struct msm_drm_private *priv,
-						struct sde_kms *sde_kms,
-						int max_encoders,
-						int max_dp_mixer_count,
-						int max_dp_dsc_count)
-{
-	static const struct sde_connector_ops hdmi_ops = {
-		.set_info_blob = hdmi_connector_set_info_blob,
-		.post_init  = hdmi_connector_post_init,
-		.detect     = hdmi_connector_detect,
-		.get_modes  = hdmi_connector_get_modes,
-		.atomic_check = hdmi_connector_atomic_check,
-		.mode_valid = hdmi_connector_mode_valid,
-		.get_info   = hdmi_connector_get_info,
-		.get_mode_info  = hdmi_connector_get_mode_info,
-		.post_open  = hdmi_connector_post_open,
-		.check_status = NULL,
-		.set_colorspace = hdmi_connector_set_colorspace,
-		.config_hdr = hdmi_connector_config_hdr,
-		.cmd_transfer = NULL,
-		.cont_splash_config = NULL,
-		.cont_splash_res_disable = NULL,
-		.get_panel_vfp = NULL,
-		.update_pps = hdmi_connector_update_pps,
-		.cmd_receive = NULL,
-		.install_properties = hdmi_connector_install_properties,
-		.set_allowed_mode_switch = NULL,
-		.set_dyn_bit_clk = NULL,
-		.update_transfer_time = NULL,
-	};
-
-	int i, connector_poll = 0, rc;
-	void *display, *connector;
-	struct drm_encoder *encoder;
-	struct msm_display_info info;
-	char cesta_client_name[32];
-	struct sde_cesta_client *cesta_client;
-
-	/* hdmi */
-	for (i = 0; i < sde_kms->hdmi_display_count &&
-			priv->num_encoders < max_encoders; ++i) {
-
-		display = sde_kms->hdmi_displays[i];
-		encoder = NULL;
-
-		memset(&info, 0x0, sizeof(info));
-		rc = hdmi_connector_get_info(NULL, &info, display);
-		if (rc) {
-			SDE_ERROR("failed to read hdmi info, %d\n", rc);
-			continue;
-		}
-
-		if (info.capabilities & MSM_DISPLAY_CAP_HOT_PLUG)
-			connector_poll = DRM_CONNECTOR_POLL_HPD;
-		// FIXME; fix this
-		//info.h_tile_instance[0] = dp_info.intf_idx[0];
-
-		snprintf(cesta_client_name, sizeof(cesta_client_name), "hdmi%u", i);
-		cesta_client = sde_cesta_create_client(DPUID(dev), cesta_client_name);
-
-		encoder = sde_encoder_init(dev, &info, cesta_client);
-		if (IS_ERR_OR_NULL(encoder)) {
-			SDE_ERROR("hdmi encoder init failed %d\n", i);
-			continue;
-		}
-
-		// FIXME: mixer count = total - dsi mixers.
-		// hdmi or dp are free to use.
-		rc = hdmi_drm_bridge_init(display, encoder,
-				max_dp_mixer_count, max_dp_dsc_count);
-		if (rc) {
-			SDE_ERROR("hdmi bridge %d init failed, %d\n", i, rc);
-			sde_encoder_destroy(encoder);
-			continue;
-		}
-
-		connector = sde_connector_init(dev,
-					encoder,
-					NULL,
-					display,
-					&hdmi_ops,
-					connector_poll,
-					DRM_MODE_CONNECTOR_HDMIA, false);
-		if (connector) {
-			priv->encoders[priv->num_encoders++] = encoder;
-			priv->connectors[priv->num_connectors++] = connector;
-		} else {
-			SDE_ERROR("hdmi %d connector init failed\n", i);
-			hdmi_drm_bridge_deinit(display);
-			sde_encoder_destroy(encoder);
-		}
-	}
-
-	return 0;
-}
-
 /**
  * _sde_kms_setup_displays - create encoders, bridges and connectors
  *                           for underlying displays
@@ -2163,7 +2023,11 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.clk_ctrl = dsi_display_set_clk_state,
 		.clk_get_rate = dsi_display_get_clk_rate,
 		.idle_pc_ctrl = dsi_display_set_idle_pc_state,
+#ifdef OPLUS_FEATURE_DISPLAY
+		.set_power = oplus_display_set_power,
+#else /* OPLUS_FEATURE_DISPLAY */
 		.set_power = dsi_display_set_power,
+#endif /* OPLUS_FEATURE_DISPLAY */
 		.get_mode_info = dsi_conn_get_mode_info,
 		.get_dst_format = dsi_display_get_dst_format,
 		.post_kickoff = dsi_conn_post_kickoff,
@@ -2182,7 +2046,13 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.get_avr_step_fps = dsi_conn_get_avr_step_fps,
 		.process_dcs_cmd_bitmask = dsi_display_process_dcs_cmd_bitmask,
 		.dcs_cmd_tx = dsi_conn_dcs_cmd_tx,
+#ifdef OPLUS_FEATURE_DISPLAY
+		/* OPLUS_FEATURE_ADFR, qsync enhance */
+		// enable qsync on/off cmds
+		.prepare_commit = dsi_display_pre_commit,
+#else /* OPLUS_FEATURE_DISPLAY */
 		.prepare_commit = dsi_conn_prepare_commit,
+#endif /* OPLUS_FEATURE_DISPLAY */
 		.set_submode_info = dsi_conn_set_submode_blob_info,
 		.get_num_lm_from_mode = dsi_conn_get_lm_from_mode,
 		.update_transfer_time = dsi_display_update_transfer_time,
@@ -2252,9 +2122,7 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 
 	max_encoders = sde_kms->dsi_display_count + sde_kms->wb_display_count +
 				sde_kms->dp_display_count +
-				sde_kms->dp_stream_count +
-				sde_kms->lb_disp_count +
-				sde_kms->hdmi_display_count;
+				sde_kms->dp_stream_count + sde_kms->lb_disp_count;
 	if (max_encoders > ARRAY_SIZE(priv->encoders)) {
 		max_encoders = ARRAY_SIZE(priv->encoders);
 		SDE_ERROR("capping number of displays to %d", max_encoders);
@@ -2502,9 +2370,6 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 			priv->encoders[priv->num_encoders++] = encoder;
 		}
 	}
-
-	setup_hdmi_displays(dev, priv, sde_kms, max_encoders,
-				max_dp_mixer_count, max_dp_dsc_count);
 
 	return 0;
 }
@@ -4491,15 +4356,11 @@ static void _sde_kms_pm_suspend_idle_helper(struct sde_kms *sde_kms,
 	struct drm_device *ddev = dev_get_drvdata(dev);
 	struct drm_connector *conn;
 	struct drm_connector_list_iter conn_iter;
-	struct sde_encoder_virt *sde_enc = NULL;
 	struct msm_drm_private *priv = sde_kms->dev->dev_private;
 
 	drm_connector_list_iter_begin(ddev, &conn_iter);
 	drm_for_each_connector_iter(conn, &conn_iter) {
 		uint64_t lp;
-
-		if (conn && conn->encoder)
-			sde_enc = to_sde_encoder_virt(conn->encoder);
 
 		lp = sde_connector_get_lp(conn);
 		if (lp != SDE_MODE_DPMS_LP2)
@@ -4523,11 +4384,7 @@ static void _sde_kms_pm_suspend_idle_helper(struct sde_kms *sde_kms,
 			if (priv->event_thread[crtc_id].thread)
 				kthread_flush_worker(
 					&priv->event_thread[crtc_id].worker);
-			if (sde_enc)
-				kthread_mod_delayed_work(&priv->disp_thread[crtc_id].worker,
-					&sde_enc->delayed_off_work, 0);
-			else
-				sde_encoder_idle_request(conn->encoder);
+			sde_encoder_idle_request(conn->encoder);
 		}
 	}
 	drm_connector_list_iter_end(&conn_iter);
@@ -4818,6 +4675,9 @@ static const struct msm_kms_funcs kms_funcs = {
 	.get_dsc_count = sde_kms_get_dsc_count,
 	.in_trusted_vm = sde_kms_in_trusted_vm,
 	.in_loopback_mode = sde_kms_in_loopback_mode,
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+	.iris_operate = iris_sde_kms_iris_operate,
+#endif
 };
 
 static int _sde_kms_mmu_destroy(struct sde_kms *sde_kms)

@@ -63,9 +63,6 @@
  * @SDE_IRQ_TYPE_PROG_LINE:		Programmable Line interrupt for WB
  * @SDE_IRQ_TYPE_RESERVED:		Reserved for expansion
  * @SDE_IRQ_TYPE_INTF_ESYNC_EMSYNC:		INTF ESYNC EMSYNC
- * @SDE_IRQ_TYPE_INTF_ESYNC_VSYNC:		INTF ESYNC VSYNC
- * @SDE_IRQ_TYPE_INTF_PANEL_VSYNC:		INTF receives this VSYNC from Panel
- * @SDE_IRQ_TYPE_INTF_ESYNC_MDP_VSYNC:		INTF ESYNC MDP VSYNC
  */
 enum sde_intr_type {
 	SDE_IRQ_TYPE_WB_ROT_COMP,
@@ -108,9 +105,6 @@ enum sde_intr_type {
 	SDE_IRQ_TYPE_WB_PROG_LINE,
 	SDE_IRQ_TYPE_RESERVED,
 	SDE_IRQ_TYPE_INTF_ESYNC_EMSYNC,
-	SDE_IRQ_TYPE_INTF_ESYNC_VSYNC,
-	SDE_IRQ_TYPE_INTF_PANEL_VSYNC,
-	SDE_IRQ_TYPE_INTF_ESYNC_MDP_VSYNC,
 };
 
 struct sde_hw_intr;
@@ -189,15 +183,6 @@ struct sde_hw_intr_ops {
 	 * @irq_idx:	Lookup irq index return from irq_idx_lookup
 	 */
 	void (*clear_interrupt_status)(
-			struct sde_hw_intr *intr,
-			int irq_idx);
-
-	/**
-	 * clear_intr_status_nolock() - clears the HW interrupts without lock
-	 * @intr:	HW interrupt handle
-	 * @irq_idx:	Lookup irq index return from irq_idx_lookup
-	 */
-	void (*clear_intr_status_nolock)(
 			struct sde_hw_intr *intr,
 			int irq_idx);
 

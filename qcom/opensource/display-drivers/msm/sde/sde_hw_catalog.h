@@ -660,6 +660,7 @@ enum {
  * @SDE_CTL_CESTA_FLUSH         CTL supports display cesta flush programming
  * @SDE_CTL_HYP_CTL_RESERVE     CTL supports Hypervisor Lockdown
  * @SDE_CTL_REG_DMA             CTL supports REG_DMA block
+ * @SDE_CTL_HYP_CTL_RESERVE     VM resource reservation
  * @SDE_CTL_MAX
  */
 enum {
@@ -1466,7 +1467,6 @@ struct sde_mdp_cfg {
  * @debugfs_ctrl:           uidle is enabled/disabled through debugfs
  * @perf_cntr_en:           performance counters are enabled/disabled
  * @dirty:                  dirty flag for uidle update
- * @fal10_override:         flag to override fal10 veto
  */
 struct sde_uidle_cfg {
 	SDE_HW_BLK_INFO;
@@ -1487,7 +1487,6 @@ struct sde_uidle_cfg {
 	bool debugfs_ctrl;
 	bool perf_cntr_en;
 	bool dirty;
-	bool fal10_override;
 };
 
 /* struct sde_mdp_cfg : MDP TOP-BLK instance info

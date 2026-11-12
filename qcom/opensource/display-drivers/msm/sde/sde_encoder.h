@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -28,7 +28,6 @@
 #include "msm_drv.h"
 #include "sde_hw_mdss.h"
 #include "sde_kms.h"
-#include "sde_vm.h"
 #include "sde_connector.h"
 #include "sde_power_handle.h"
 #include "sde_cesta.h"
@@ -52,7 +51,11 @@
 #define SDE_ENCODER_FRAME_EVENT_SIGNAL_RETIRE_FENCE	BIT(4)
 #define SDE_ENCODER_FRAME_EVENT_CWB_DONE		BIT(5)
 
-#define IDLE_POWERCOLLAPSE_DURATION	(66 - 16/2)
+#ifdef OPLUS_FEATURE_DISPLAY
+#define IDLE_POWERCOLLAPSE_DURATION (80 - 16/2)
+#else /* OPLUS_FEATURE_DISPLAY */
+#define IDLE_POWERCOLLAPSE_DURATION (66 - 16/2)
+#endif /* OPLUS_FEATURE_DISPLAY */
 #define IDLE_POWERCOLLAPSE_IN_EARLY_WAKEUP (200 - 16/2)
 
 /* below this fps limit, timeouts are adjusted based on fps */
@@ -322,6 +325,7 @@ enum sde_sim_qsync_event {
  * @ctl_done_supported          boolean flag to indicate the availability of
  *                              ctl done irq support for the hardware
  * @dynamic_irqs_config         bitmask config to enable encoder dynamic irqs
+ * @vsync_event_wq              Queue to wait for the vsync event complete
  * @dpu_ctl_op_sync:		Flag indicating displays attached are enabled in sync mode
  * @ops:                        Encoder ops from init function
  * @old_vsyc_count:             Intf tearcheck vsync_count for old mode.
@@ -329,6 +333,12 @@ enum sde_sim_qsync_event {
  * @sde_cesta_client:           Point to sde_cesta client for the encoder.
  * @cesta_enable_frame:         Boolean indicating if its first frame after power-collapse/resume
  *				which requires special handling for cesta.
+ * @cesta_flush_active:         Boolean indicating cesta override flush_active bit is set
+ * @cesta_force_auto_active_db_update:	Boolean indicating auto-active-on-panic is set in SCC
+ *					with force-db-update. This is required as a workaround for
+ *					cmd mode when previous frame ctl-done is very close to
+ *					wakeup/panic windows.
+ * @intf_master:		Interface Idx for the master interface
  * @cesta_scc_override:	        Boolean indicating SCC CTRL settings have been overridden.
  */
 struct sde_encoder_virt {
@@ -384,6 +394,9 @@ struct sde_encoder_virt {
 	struct kthread_work self_refresh_work;
 	struct kthread_work backlight_cmd_work;
 	struct kthread_delayed_work backlight_sr_work;
+#if defined(CONFIG_PXLW_IRIS)
+	struct kthread_work disable_autorefresh_work;
+#endif
 
 	struct input_handler *input_handler;
 	bool vblank_enabled;
@@ -409,16 +422,54 @@ struct sde_encoder_virt {
 	bool ctl_done_supported;
 
 	unsigned long dynamic_irqs_config;
+	wait_queue_head_t vsync_event_wq;
 
 	bool dpu_ctl_op_sync;
 	struct sde_encoder_ops ops;
 	u32 mode_switch;
 	struct sde_cesta_client *cesta_client;
 	bool cesta_enable_frame;
+	bool cesta_force_active;
+	bool cesta_force_auto_active_db_update;
+	bool cesta_reset_intf_master;
+	u32 intf_master;
 	bool cesta_scc_override;
 };
 
 #define to_sde_encoder_virt(x) container_of(x, struct sde_encoder_virt, base)
+
+#ifdef OPLUS_FEATURE_DISPLAY
+/**
+ * sde_encoder_wait_vblack - wait vblack
+ * @connector:  Pointer to drm connector structure
+ * @drm_enc:      Pointer to drm encoder structure
+ * @wait_num:    wait vysnc times
+ * @Return:   void.
+ */
+void sde_encoder_wait_vblack(struct drm_connector *connector, struct drm_encoder *drm_enc, int wait_num);
+
+ /**
+ * sde_encoder_pre_kickoff_update_panel_level - update panel backlight before kickoff
+ * @connector:   Pointer to drm connector
+ * @drm_enc:     structure Pointer to drm encoder structure
+ * @Return:     void.
+ */
+void sde_encoder_pre_kickoff_update_panel_level(struct drm_connector *connector,  struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_post_kickoff_update_panel_level - update panel backlight after kickoff
+ * @connector:    Pointer to drm connector structure
+ * @Return:     void.
+ */
+void sde_encoder_post_kickoff_update_panel_level(struct drm_connector *connector);
+
+/**
+ * sde_encoder_update_panel_level - update panel level
+ * @connector:    Pointer to drm connector structure
+ * @drm_enc:    Pointer to drm encoder structure
+ */
+void sde_encoder_update_panel_level(struct drm_connector *connector,  struct drm_encoder *drm_enc);
+#endif /* OPLUS_FEATURE_DISPLAY */
 
 /**
  * sde_encoder_get_hw_resources - Populate table of required hardware resources
@@ -686,13 +737,6 @@ void sde_encoder_enable_recovery_event(struct drm_encoder *encoder);
 bool sde_encoder_in_clone_mode(struct drm_encoder *enc);
 
 /**
- * sde_encoder_is_self_refresh_completed - checks if self refresh is completed
- * @sde_enc:    Pointer to sde encoder structure
- * @Return:     true if self refresh is completed
- */
-bool sde_encoder_is_self_refresh_completed(struct sde_encoder_virt *sde_enc);
-
-/**
  * sde_encoder_in_video_psr - checks if it is in video psr panel
  * @drm_enc:    Pointer to drm encoder structure
  * @Return:     true if successful
@@ -777,13 +821,6 @@ void sde_encoder_control_idle_pc(struct drm_encoder *enc, bool enable);
  * @Return:     true if display in continuous splash
  */
 int sde_encoder_in_cont_splash(struct drm_encoder *enc);
-
-/**
- * sde_encoder_in_cont_splash - checks if display supports PSR feature
- * @drm_enc:    Pointer to drm encoder structure
- * @Return:     true if display supports PSR feature
- */
-bool sde_encoder_is_psr_supported(struct drm_encoder *enc);
 
 /**
  * sde_encoder_helper_hw_reset - hw reset helper function
@@ -1079,20 +1116,6 @@ void sde_encoder_complete_commit(struct drm_encoder *drm_enc);
 void sde_encoder_post_commit_bl_sr_work(struct drm_encoder *drm_enc);
 
 /**
- * sde_encoder_trusted_vm_release - prepare interface for secure vm transition
- * @sde_enc: pointer to sde encoder
- */
-bool sde_encoder_trusted_vm_release(struct sde_encoder_virt *sde_enc);
-
-/**
- * sde_encoder_vhm_trusted_vm_prepare - prepare vhm panel for secure vm transition
- * @drm_enc: pointer to drm encoder
- * @vm_req: current vm_req state
- */
-void sde_encoder_vhm_trusted_vm_prepare(struct drm_encoder *drm_enc,
-	enum sde_crtc_vm_req vm_req);
-
-/**
  * sde_encoder_get_cesta_client - return the SDE CESTA client
  * @drm_enc: pointer to drm encoder
  */
@@ -1141,4 +1164,65 @@ static inline int sde_encoder_register_misr_event(struct drm_encoder *drm_enc, b
  * @Return: true if copr notify is allowed
  */
 bool sde_encoder_copr_allow_notify(struct drm_encoder *drm_enc);
+
+#if defined(CONFIG_PXLW_IRIS) || defined(CONFIG_PXLW_SOFT_IRIS)
+/**
+ * sde_encoder_rc_lock - lock the sde encoder resource control.
+ * @drm_enc:    Pointer to drm encoder structure
+ * @Return:     void.
+ */
+void sde_encoder_rc_lock(struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_rc_unlock - unlock the sde encoder resource control.
+ * @drm_enc:    Pointer to drm encoder structure
+ * @Return:     void.
+ */
+void sde_encoder_rc_unlock(struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_disable_autorefresh - disable autorefresh
+ * @drm_enc:    Pointer to drm encoder structure
+ * @Return:     void.
+ */
+void sde_encoder_disable_autorefresh_handler(struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_is_disabled - encoder is disabled
+ * @drm_enc:    Pointer to drm encoder structure
+ * @Return:     bool.
+ */
+//bool sde_encoder_is_disabled(struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_wait_vblack - wait vblack
+ * @connector:    Pointer to drm connector structure
+ * @drm_enc:    Pointer to drm encoder structure
+ * @wait_num:    wait vysnc times
+ * @Return:     void.
+ */
+void sde_encoder_wait_vblack(struct drm_connector *connector, struct drm_encoder *drm_enc, int wait_num);
+
+/**
+ * sde_encoder_pre_kickoff_update_panel_level - update panel backlight before kickoff
+ * @drm_enc:    Pointer to drm encoder structure
+ * @drm_enc:    Pointer to drm connector structure
+ * @Return:     void.
+ */
+void sde_encoder_pre_kickoff_update_panel_level(struct drm_connector *connector,  struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_post_kickoff_update_panel_level - update panel backlight after kickoff
+ * @drm_enc:    Pointer to drm connector structure
+ * @Return:     void.
+ */
+void sde_encoder_post_kickoff_update_panel_level(struct drm_connector *connector);
+
+/**
+ * sde_encoder_update_panel_level - update panel level
+ * @drm_enc:    Pointer to drm encoder structure
+ * @connector:    Pointer to drm connector structure
+ */
+void sde_encoder_update_panel_level(struct drm_connector *connector,  struct drm_encoder *drm_enc);
+#endif
 #endif /* __SDE_ENCODER_H__ */

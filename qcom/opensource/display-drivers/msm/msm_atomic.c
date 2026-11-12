@@ -24,6 +24,7 @@
 #include "msm_gem.h"
 #include "msm_kms.h"
 #include "sde_trace.h"
+#include "sde_dbg.h"
 #include <drm/drm_atomic_uapi.h>
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
 #include <linux/dma-fence-chain.h>
@@ -638,6 +639,7 @@ int msm_atomic_prepare_fb(struct drm_plane *plane,
 	return msm_framebuffer_prepare(new_state->fb, kms->aspace);
 }
 
+extern int dbg_cnt;
 /* The (potentially) asynchronous part of the commit.  At this point
  * nothing can fail short of armageddon.
  */
@@ -647,6 +649,11 @@ static void complete_commit(struct msm_commit *c)
 	struct drm_device *dev = state->dev;
 	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_kms *kms = priv->kms;
+
+	if (dbg_cnt) {
+		SDE_EVT32(dbg_cnt);
+		//SDE_DBG_DUMP(SDE_DBG_BUILT_IN_ALL);
+	}
 
 	drm_atomic_helper_wait_for_fences(dev, state, false);
 
@@ -722,20 +729,15 @@ static void msm_atomic_commit_dispatch(struct drm_device *dev,
 {
 	struct msm_drm_private *priv = dev->dev_private;
 	struct drm_crtc *crtc = NULL;
-	struct drm_crtc_state *old_crtc_state = NULL, *new_crtc_state = NULL;
+	struct drm_crtc_state *crtc_state = NULL;
 	int ret = -ECANCELED, i = 0, j = 0;
 	bool nonblock;
 
 	/* cache since work will kfree commit in non-blocking case */
 	nonblock = commit->nonblock;
 
-	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state,
-			new_crtc_state, i) {
-		if (!old_crtc_state->active && !new_crtc_state->active)
-			continue;
-
+	for_each_old_crtc_in_state(state, crtc, crtc_state, i) {
 		for (j = 0; j < priv->num_crtcs; j++) {
-
 			if (priv->disp_thread[j].crtc_id ==
 						crtc->base.id) {
 				if (priv->disp_thread[j].thread) {
