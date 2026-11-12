@@ -1028,6 +1028,9 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 	if ((status_mode == ESD_MODE_SW_SIM_SUCCESS) || is_sim_panel(display))
 		goto release_panel_lock;
 
+	if (!panel->esd_config.esd_enabled)
+		goto release_panel_lock;
+
 	if (status_mode == ESD_MODE_SW_SIM_FAILURE) {
 		rc = -EINVAL;
 		goto release_panel_lock;

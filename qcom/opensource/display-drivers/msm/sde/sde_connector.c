@@ -3538,6 +3538,9 @@ int sde_connector_esd_status(struct drm_connector *conn)
 	if (!display)
 		return 0;
 
+	if (display->panel && !display->panel->esd_config.esd_enabled)
+		return 0;
+
 	/* protect this call with ESD status check call */
 	mutex_lock(&sde_conn->lock);
 	if (atomic_read(&(display->panel->esd_recovery_pending))) {
