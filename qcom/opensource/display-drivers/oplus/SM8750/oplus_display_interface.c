@@ -391,6 +391,12 @@ int oplus_display_read_status(struct dsi_panel *panel)
 
 bool oplus_display_check_status_pre(struct dsi_panel *panel)
 {
+	if (!panel)
+		return true;
+
+	if (!panel->esd_config.esd_enabled)
+		return true;
+
 	if (atomic_read(&panel->oplus_panel.esd_pending)) {
 		OPLUS_DSI_INFO("Skip the check because esd is pending\n");
 		return true;
