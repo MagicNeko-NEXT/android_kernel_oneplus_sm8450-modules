@@ -3794,12 +3794,12 @@ static int cam_vfe_bus_ver3_update_wm(void *priv, void *cmd_args, uint32_t arg_s
 			CAM_DBG(CAM_ISP, "VFE:%u Warning unaligned stride %u expected %u",
 				bus_priv->common_data.core_index, stride, val);
 
-		if (cfg->stride != val || !wm_data->init_cfg_done ||
+		if (cfg->stride != stride || !wm_data->init_cfg_done ||
 			((wm_data->out_rsrc_data->mc_based ||
 			wm_data->out_rsrc_data->cntxt_cfg_except) &&
 			!wm_data->mc_data[hw_cntxt_id].init_cfg_done) ||
 			wm_data->update_wm_stride) {
-			val = (cfg->stride ? cfg->stride : (cfg->stride = val));
+			val = (cfg->stride ? cfg->stride : (cfg->stride = stride));
 
 			CAM_ISP_ADD_REG_VAL_PAIR(reg_val_pair, MAX_REG_VAL_PAIR_SIZE, j,
 				wm_data->hw_regs->image_cfg_2, val);
