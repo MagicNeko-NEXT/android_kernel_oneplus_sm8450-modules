@@ -1121,7 +1121,6 @@ static int cam_vfe_bus_ver3_config_port(
 	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_HDR_BE:
 	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_HDR_BHIST:
 	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_TL_BG:
-	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_BF:
 	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_AWB_BG:
 	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_BHIST:
 	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_RS:
@@ -1143,6 +1142,7 @@ static int cam_vfe_bus_ver3_config_port(
 		rsrc_data->cfg.en_cfg = (common_reg->wm_mode_val[CAM_VFE_WM_FRAME_BASED_MODE] <<
 			common_reg->wm_mode_shift) | (1 << common_reg->wm_en_shift);
 		break;
+	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_BF:
 	case CAM_VFE_BUS_VER3_VFE_OUT_STATS_CAF:
 		rsrc_data->cfg.en_cfg = (common_reg->wm_mode_val[CAM_VFE_WM_FRAME_BASED_MODE] <<
 			common_reg->wm_mode_shift) | (1 << common_reg->wm_en_shift);
