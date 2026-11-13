@@ -15,9 +15,8 @@ ccflags-y += -DCONFIG_SPECTRA_SENSOR=1
 # External Dependencies
 KBUILD_CPPFLAGS += -DCONFIG_MSM_MMRM=1
 ccflags-y += -DCONFIG_MSM_GLOBAL_SYNX=1
-ccflags-y += -I$(CAMERA_KERNEL_ROOT)/../synx-kernel/include/uapi/synx
-ccflags-y += -I$(CAMERA_KERNEL_ROOT)/../synx-kernel/include/uapi/synx/media
-ccflags-y += -I$(CAMERA_KERNEL_ROOT)/../synx-kernel/msm/synx
+ccflags-y += -I$(CAMERA_KERNEL_ROOT)/../synx-kernel-v1/include/uapi/synx
+ccflags-y += -I$(CAMERA_KERNEL_ROOT)/../synx-kernel-v1/msm/synx
 ifeq ($(CONFIG_QCOM_VA_MINIDUMP), y)
 KBUILD_CPPFLAGS += -DCONFIG_QCOM_VA_MINIDUMP=1
 endif
