@@ -208,6 +208,13 @@ static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 		}
 		break;
 	}
+	case CAM_FLUSH_REQ: {
+		if (((fctrl->flash_state == CAM_FLASH_STATE_CONFIG) ||
+			(fctrl->flash_state == CAM_FLASH_STATE_START)) &&
+			fctrl->func_tbl.flush_req)
+			rc = fctrl->func_tbl.flush_req(fctrl, FLUSH_ALL, 0);
+		break;
+	}
 	default:
 		CAM_ERR(CAM_FLASH, "Invalid Opcode: %d", cmd->op_code);
 		rc = -EINVAL;

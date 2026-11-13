@@ -12,6 +12,9 @@
 #include "cam_compat.h"
 #include "cam_mem_mgr_api.h"
 
+#ifndef VIDIOC_CAM_SENSOR_STATR
+#define VIDIOC_CAM_SENSOR_STATR 0x9000
+#endif
 #ifndef VIDIOC_CAM_SENSOR_STOP
 #define VIDIOC_CAM_SENSOR_STOP 0x9001
 #endif
@@ -83,6 +86,8 @@ static long cam_sensor_subdev_ioctl(struct v4l2_subdev *sd,
 		}
 
 		rc = cam_sensor_subdev_close_internal(sd, NULL);
+		break;
+	case VIDIOC_CAM_SENSOR_STATR:
 		break;
 	case VIDIOC_CAM_SENSOR_STOP:
 		if (s_ctrl) {

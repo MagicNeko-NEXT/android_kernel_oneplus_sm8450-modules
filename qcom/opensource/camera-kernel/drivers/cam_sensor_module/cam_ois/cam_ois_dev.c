@@ -13,6 +13,16 @@
 #include "cam_compat.h"
 #include "cam_mem_mgr_api.h"
 
+#ifndef VIDIOC_CAM_SENSOR_STATR
+#define VIDIOC_CAM_SENSOR_STATR 0x9000
+#endif
+#ifndef VIDIOC_CAM_SENSOR_STOP
+#define VIDIOC_CAM_SENSOR_STOP 0x9001
+#endif
+#ifndef VIDIOC_OIS_INIT_IN_ADVANCE
+#define VIDIOC_OIS_INIT_IN_ADVANCE 0x9003
+#endif
+
 static struct cam_i3c_ois_data {
 	struct cam_ois_ctrl_t                       *o_ctrl;
 	struct completion                            probe_complete;
@@ -73,6 +83,10 @@ static long cam_ois_subdev_ioctl(struct v4l2_subdev *sd,
 			return 0;
 		}
 		rc = cam_ois_subdev_close_internal(sd, NULL);
+		break;
+	case VIDIOC_CAM_SENSOR_STATR:
+	case VIDIOC_CAM_SENSOR_STOP:
+	case VIDIOC_OIS_INIT_IN_ADVANCE:
 		break;
 	default:
 		CAM_ERR(CAM_OIS, "Wrong IOCTL cmd: %u", cmd);
