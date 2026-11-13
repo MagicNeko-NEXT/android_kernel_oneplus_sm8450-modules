@@ -253,11 +253,15 @@ int i2c_write(struct nfc_dev *nfc_dev, const char *buf, size_t count,
 	for (retry_cnt = 1; retry_cnt <= max_retry_cnt; retry_cnt++) {
 		ret = i2c_master_send(nfc_dev->i2c_dev.client, buf, count);
 		NFCLOG_IPC(nfc_dev, false, "%s ret %d", __func__, ret);
-		if (ret <= 0) {
-			pr_warn("NxpDrv: %s: write failed ret(%d), maybe in standby\n",
-				__func__, ret);
+		if (ret == -ENOTCONN) {
+			pr_warn("NxpDrv: %s: write failed ret(%d), maybe in standby (retry %d/%d)\n",
+				__func__, ret, retry_cnt, max_retry_cnt);
 			usleep_range(WRITE_RETRY_WAIT_TIME_US,
 				     WRITE_RETRY_WAIT_TIME_US + 100);
+		} else if (ret <= 0) {
+			pr_warn("NxpDrv: %s: write failed ret(%d)\n",
+				__func__, ret);
+			break;
 		} else if (ret != count) {
 			pr_err("NxpDrv: %s: failed to write %d\n", __func__, ret);
 			ret = -EIO;
@@ -317,7 +321,7 @@ ssize_t nfc_i2c_dev_write(struct file *filp, const char __user *buf,
 		mutex_unlock(&nfc_dev->write_mutex);
 		return -EFAULT;
 	}
-	ret = i2c_write(nfc_dev, nfc_dev->write_kbuf, count, NO_RETRY);
+	ret = i2c_write(nfc_dev, nfc_dev->write_kbuf, count, MAX_RETRY_COUNT);
 	mutex_unlock(&nfc_dev->write_mutex);
 	return ret;
 }

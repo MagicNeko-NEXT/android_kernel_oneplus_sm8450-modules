@@ -2135,11 +2135,19 @@ int oplus_ofp_hbm_handle(void *sde_encoder_virt)
 
 	OPLUS_OFP_TRACE_BEGIN("oplus_ofp_hbm_handle");
 
-	hbm_enable = sde_connector_get_property(c_conn->base.state, CONNECTOR_PROP_HBM_ENABLE);
-	bl_level = display->panel->bl_config.bl_level;
-	refresh_rate = display->panel->cur_mode->timing.refresh_rate;
-	OFP_DEBUG("hbm_enable:%llu, bl_level=%u refresh_rate=%u\n", hbm_enable, bl_level, refresh_rate);
-
+	{
+		static uint64_t last_logged_hbm_enable = 0;
+		hbm_enable = sde_connector_get_property(c_conn->base.state, CONNECTOR_PROP_HBM_ENABLE);
+		if (!hbm_enable && p_oplus_ofp_params->hbm_enable)
+			hbm_enable = p_oplus_ofp_params->hbm_enable;
+		bl_level = display->panel->bl_config.bl_level;
+		refresh_rate = display->panel->cur_mode->timing.refresh_rate;
+		if (hbm_enable != last_logged_hbm_enable) {
+			OFP_INFO("hbm_enable:%llu, bl_level=%u refresh_rate=%u hbm_state=%d\n",
+					hbm_enable, bl_level, refresh_rate, oplus_ofp_get_hbm_state());
+			last_logged_hbm_enable = hbm_enable;
+		}
+	}
 	if ((!p_oplus_ofp_params->doze_active && (hbm_enable & OPLUS_OFP_PROPERTY_DIM_LAYER
 			|| hbm_enable & OPLUS_OFP_PROPERTY_FINGERPRESS_LAYER) && bl_level)
 				|| (p_oplus_ofp_params->doze_active && (hbm_enable & OPLUS_OFP_PROPERTY_FINGERPRESS_LAYER)
@@ -2442,7 +2450,8 @@ int oplus_ofp_pressed_icon_status_update(void *sde_encoder_phys, unsigned int ir
 	OPLUS_OFP_TRACE_BEGIN("oplus_ofp_pressed_icon_status_update");
 
 	hbm_enable = sde_connector_get_property(c_conn->base.state, CONNECTOR_PROP_HBM_ENABLE);
-
+	if (!hbm_enable && p_oplus_ofp_params->hbm_enable)
+		hbm_enable = p_oplus_ofp_params->hbm_enable;
 	if (irq_type == OPLUS_OFP_WD_PTR) {
 		if ((!(last_hbm_enable & OPLUS_OFP_PROPERTY_FINGERPRESS_LAYER))
 				&& (hbm_enable & OPLUS_OFP_PROPERTY_FINGERPRESS_LAYER)) {
@@ -2913,7 +2922,8 @@ bool oplus_ofp_backlight_filter(void *dsi_panel, unsigned int bl_level)
 	OPLUS_OFP_TRACE_BEGIN("oplus_ofp_backlight_filter");
 
 	hbm_enable = sde_connector_get_property(c_conn->base.state, CONNECTOR_PROP_HBM_ENABLE);
-
+	if (!hbm_enable && p_oplus_ofp_params->hbm_enable)
+		hbm_enable = p_oplus_ofp_params->hbm_enable;
 	if (oplus_ofp_get_hbm_state()) {
 		if (!bl_level) {
 			p_oplus_ofp_params->hbm_mode = 0;
