@@ -6,7 +6,6 @@ KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS+=$(M)/../../mm-drivers/hw_fence/Module.sy
 KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS+=$(M)/../../mm-drivers/sync_fence/Module.symvers
 KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS+=$(M)/../../mmrm-driver/Module.symvers
 KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS+=$(M)/../../securemsm-kernel/Module.symvers
-KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS+=$(M)/../../synx-kernel/Module.symvers
 
 all: modules
 
