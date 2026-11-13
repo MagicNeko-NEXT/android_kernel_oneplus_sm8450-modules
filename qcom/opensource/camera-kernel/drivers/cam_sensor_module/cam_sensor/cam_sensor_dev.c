@@ -12,6 +12,10 @@
 #include "cam_compat.h"
 #include "cam_mem_mgr_api.h"
 
+#ifndef VIDIOC_CAM_SENSOR_STOP
+#define VIDIOC_CAM_SENSOR_STOP 0x9001
+#endif
+
 static struct cam_sensor_i3c_sensor_data {
 	struct cam_sensor_ctrl_t                  *s_ctrl;
 	struct completion                          probe_complete;
@@ -79,6 +83,16 @@ static long cam_sensor_subdev_ioctl(struct v4l2_subdev *sd,
 		}
 
 		rc = cam_sensor_subdev_close_internal(sd, NULL);
+		break;
+	case VIDIOC_CAM_SENSOR_STOP:
+		if (s_ctrl) {
+			mutex_lock(&(s_ctrl->cam_sensor_mutex));
+			if (s_ctrl->sensor_state == CAM_SENSOR_START) {
+				cam_sensor_power_down(s_ctrl);
+				s_ctrl->sensor_state = CAM_SENSOR_ACQUIRE;
+			}
+			mutex_unlock(&(s_ctrl->cam_sensor_mutex));
+		}
 		break;
 	default:
 		CAM_ERR(CAM_SENSOR, "Invalid ioctl cmd: %d", cmd);
