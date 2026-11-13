@@ -2717,7 +2717,7 @@ static int cam_vfe_bus_ver3_init_vfe_out_resource(uint32_t  index,
 	vfe_out->irq_handle = 0;
 
 	rsrc_data->mc_comp_irq_handle = 0;
-	rsrc_data->num_mid = ver3_hw_info->vfe_out_hw_info->num_mid;
+	rsrc_data->num_mid = ver3_hw_info->vfe_out_hw_info[index].num_mid;
 	rsrc_data->mid = ver3_hw_info->vfe_out_hw_info[index].mid;
 
 	return 0;
@@ -4995,7 +4995,7 @@ static int cam_vfe_bus_get_res_for_mid(
 		out_data = (struct cam_vfe_bus_ver3_vfe_out_data *)
 			bus_priv->vfe_out[port_mid[i]].res_priv;
 		get_res->out_res_id = bus_priv->vfe_out[port_mid[i]].res_id;
-		if (out_data->pid_mask & (BIT(get_res->pid))) {
+		if (!out_data->pid_mask || (out_data->pid_mask & (BIT(get_res->pid)))) {
 			get_res->out_res_id = bus_priv->vfe_out[port_mid[i]].res_id;
 			pid_found = true;
 			CAM_INFO(CAM_ISP, "VFE:%u match mid:%d out_res:0x%x found, is pid found:%d",
