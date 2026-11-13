@@ -473,6 +473,7 @@ int cam_res_mgr_gpio_request(struct device *dev, uint gpio,
 		gpio_res = CAM_MEM_ZALLOC(sizeof(struct cam_gpio_res), GFP_KERNEL);
 		if (!gpio_res) {
 			CAM_ERR(CAM_RES, "Not Enough Mem");
+			gpio_free(gpio);
 			rc = -ENOMEM;
 			goto end;
 		}
@@ -676,6 +677,7 @@ int cam_res_mgr_gpio_set_value(unsigned int gpio, int value)
 	 **/
 	if (!found) {
 		CAM_ERR(CAM_RES, "gpio: %u not found", gpio);
+		mutex_unlock(&cam_res->gpio_res_lock);
 		return -EINVAL;
 	} else if (!cam_res->shared_gpio_enabled) {
 		gpio_set_value_cansleep(gpio, value);
