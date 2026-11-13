@@ -1,197 +1,82 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2020-2022, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2024, 2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/dma-buf.h>
 #include <linux/dma-heap.h>
 #include <linux/dma-mapping.h>
+#include <linux/qcom-dma-mapping.h>
+#include <linux/mem-buf.h>
+#include <linux/vmalloc.h>
+#include <soc/qcom/secure_buffer.h>
 
 #include "msm_vidc_memory.h"
-#include "msm_vidc_internal.h"
 #include "msm_vidc_debug.h"
+#include "msm_vidc_internal.h"
 #include "msm_vidc_driver.h"
+#include "msm_vidc_dt.h"
 #include "msm_vidc_core.h"
 #include "msm_vidc_events.h"
-#include "msm_vidc_platform.h"
-#include "venus_hfi.h"
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0))
+#if (KERNEL_VERSION(5, 16, 0) <= LINUX_VERSION_CODE)
 	MODULE_IMPORT_NS(DMA_BUF);
 #endif
 
-struct msm_vidc_type_size_name {
-	enum msm_memory_pool_type type;
-	u32                       size;
-	char                     *name;
+struct msm_vidc_buf_region_name {
+	enum msm_vidc_buffer_region region;
+	char *name;
 };
 
-static const struct msm_vidc_type_size_name buftype_size_name_arr[] = {
-	{MSM_MEM_POOL_BUFFER,     sizeof(struct msm_vidc_buffer),     "MSM_MEM_POOL_BUFFER"     },
-	{MSM_MEM_POOL_ALLOC_MAP,  sizeof(struct msm_vidc_mem),        "MSM_MEM_POOL_ALLOC_MAP"  },
-	{MSM_MEM_POOL_TIMESTAMP,  sizeof(struct msm_vidc_timestamp),  "MSM_MEM_POOL_TIMESTAMP"  },
-	{MSM_MEM_POOL_DMABUF,     sizeof(struct msm_memory_dmabuf),   "MSM_MEM_POOL_DMABUF"     },
-	{MSM_MEM_POOL_PACKET,     sizeof(struct hfi_pending_packet) + MSM_MEM_POOL_PACKET_SIZE,
-		"MSM_MEM_POOL_PACKET"},
-	{MSM_MEM_POOL_BUF_TIMER,  sizeof(struct msm_vidc_input_timer), "MSM_MEM_POOL_BUF_TIMER" },
-	{MSM_MEM_POOL_BUF_STATS,  sizeof(struct msm_vidc_buffer_stats), "MSM_MEM_POOL_BUF_STATS"},
-};
-
-void *msm_vidc_pool_alloc(struct msm_vidc_inst *inst, enum msm_memory_pool_type type)
+struct context_bank_info *get_context_bank(struct msm_vidc_core *core,
+		enum msm_vidc_buffer_region region)
 {
-	struct msm_memory_alloc_header *hdr = NULL;
-	struct msm_memory_pool *pool;
+	const char *name;
+	struct context_bank_info *cb = NULL, *match = NULL;
+	static const struct msm_vidc_buf_region_name buf_region_name[] = {
+		{MSM_VIDC_REGION_NONE,          "none"                 },
+		{MSM_VIDC_NON_SECURE,           "venus_ns"             },
+		{MSM_VIDC_NON_SECURE_PIXEL,     "venus_ns_pixel"       },
+		{MSM_VIDC_SECURE_PIXEL,         "venus_sec_pixel"      },
+		{MSM_VIDC_SECURE_NONPIXEL,      "venus_sec_non_pixel"  },
+		{MSM_VIDC_SECURE_BITSTREAM,     "venus_sec_bitstream"  },
+	};
 
-	if (type < 0 || type >= MSM_MEM_POOL_MAX) {
-		d_vpr_e("%s: Invalid params\n", __func__);
-		return NULL;
-	}
-	pool = &inst->pool[type];
+	if (!region || region > ARRAY_SIZE(buf_region_name))
+		goto exit;
 
-	if (!list_empty(&pool->free_pool)) {
-		/* get 1st node from free pool */
-		hdr = list_first_entry(&pool->free_pool,
-			struct msm_memory_alloc_header, list);
+	if (buf_region_name[region].region != region)
+		goto exit;
 
-		/* move node from free pool to busy pool */
-		list_move_tail(&hdr->list, &pool->busy_pool);
+	name = buf_region_name[region].name;
 
-		/* reset existing data */
-		memset((char *)hdr->buf, 0, pool->size);
-
-		/* set busy flag to true. This is to catch double free request */
-		hdr->busy = true;
-
-		return hdr->buf;
-	}
-
-	hdr = vzalloc(pool->size + sizeof(struct msm_memory_alloc_header));
-	if (!hdr) {
-		i_vpr_e(inst, "%s: allocation failed\n", __func__);
-		return NULL;
-	}
-
-	INIT_LIST_HEAD(&hdr->list);
-	hdr->type = type;
-	hdr->busy = true;
-	hdr->buf = (void *)(hdr + 1);
-	list_add_tail(&hdr->list, &pool->busy_pool);
-
-	return hdr->buf;
-}
-
-void msm_vidc_pool_free(struct msm_vidc_inst *inst, void *vidc_buf)
-{
-	struct msm_memory_alloc_header *hdr;
-	struct msm_memory_pool *pool;
-
-	if (!vidc_buf) {
-		d_vpr_e("%s: Invalid params\n", __func__);
-		return;
-	}
-	hdr = (struct msm_memory_alloc_header *)vidc_buf - 1;
-
-	/* sanitize buffer addr */
-	if (hdr->buf != vidc_buf) {
-		i_vpr_e(inst, "%s: invalid buf addr %p\n", __func__, vidc_buf);
-		return;
-	}
-
-	/* sanitize pool type */
-	if (hdr->type < 0 || hdr->type >= MSM_MEM_POOL_MAX) {
-		i_vpr_e(inst, "%s: invalid pool type %#x\n", __func__, hdr->type);
-		return;
-	}
-	pool = &inst->pool[hdr->type];
-
-	/* catch double-free request */
-	if (!hdr->busy) {
-		i_vpr_e(inst, "%s: double free request. type %s, addr %p\n", __func__,
-			pool->name, vidc_buf);
-		return;
-	}
-	hdr->busy = false;
-
-	/* move node from busy pool to free pool */
-	list_move_tail(&hdr->list, &pool->free_pool);
-}
-
-static void msm_vidc_destroy_pool_buffers(struct msm_vidc_inst *inst,
-	enum msm_memory_pool_type type)
-{
-	struct msm_memory_alloc_header *hdr, *dummy;
-	struct msm_memory_pool *pool;
-	u32 fcount = 0, bcount = 0;
-
-	if (type < 0 || type >= MSM_MEM_POOL_MAX) {
-		d_vpr_e("%s: Invalid params\n", __func__);
-		return;
-	}
-	pool = &inst->pool[type];
-
-	/* detect memleak: busy pool is expected to be empty here */
-	if (!list_empty(&pool->busy_pool))
-		i_vpr_e(inst, "%s: destroy request on active buffer. type %s\n",
-			__func__, pool->name);
-
-	/* destroy all free buffers */
-	list_for_each_entry_safe(hdr, dummy, &pool->free_pool, list) {
-		list_del(&hdr->list);
-		vfree(hdr);
-		fcount++;
-	}
-
-	/* destroy all busy buffers */
-	list_for_each_entry_safe(hdr, dummy, &pool->busy_pool, list) {
-		list_del(&hdr->list);
-		vfree(hdr);
-		bcount++;
-	}
-
-	i_vpr_h(inst, "%s: type: %23s, count: free %2u, busy %2u\n",
-		__func__, pool->name, fcount, bcount);
-}
-
-int msm_vidc_pools_init(struct msm_vidc_inst *inst)
-{
-	u32 i;
-
-	if (ARRAY_SIZE(buftype_size_name_arr) != MSM_MEM_POOL_MAX) {
-		i_vpr_e(inst, "%s: num elements mismatch %lu %u\n", __func__,
-			ARRAY_SIZE(buftype_size_name_arr), MSM_MEM_POOL_MAX);
-		return -EINVAL;
-	}
-
-	for (i = 0; i < MSM_MEM_POOL_MAX; i++) {
-		if (i != buftype_size_name_arr[i].type) {
-			i_vpr_e(inst, "%s: type mismatch %u %u\n", __func__,
-				i, buftype_size_name_arr[i].type);
-			return -EINVAL;
+	list_for_each_entry(cb, &core->dt->context_banks, list) {
+		if (!strcmp(cb->name, name)) {
+			match = cb;
+			break;
 		}
-		inst->pool[i].size = buftype_size_name_arr[i].size;
-		inst->pool[i].name = buftype_size_name_arr[i].name;
-		INIT_LIST_HEAD(&inst->pool[i].free_pool);
-		INIT_LIST_HEAD(&inst->pool[i].busy_pool);
 	}
+	if (!match)
+		d_vpr_e("cb not found for region %#x\n", region);
 
-	return 0;
+	return match;
+
+exit:
+	d_vpr_e("Invalid region %#x\n", region);
+	return NULL;
 }
 
-void msm_vidc_pools_deinit(struct msm_vidc_inst *inst)
-{
-	u32 i = 0;
-
-	/* destroy all buffers from all pool types */
-	for (i = 0; i < MSM_MEM_POOL_MAX; i++)
-		msm_vidc_destroy_pool_buffers(inst, i);
-}
-
-static struct dma_buf *msm_vidc_dma_buf_get(struct msm_vidc_inst *inst, int fd)
+struct dma_buf *msm_vidc_memory_get_dmabuf(struct msm_vidc_inst *inst, int fd)
 {
 	struct msm_memory_dmabuf *buf = NULL;
 	struct dma_buf *dmabuf = NULL;
 	bool found = false;
+
+	if (!inst) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return NULL;
+	}
 
 	/* get local dmabuf ref for tracking */
 	dmabuf = dma_buf_get(fd);
@@ -216,7 +101,7 @@ static struct dma_buf *msm_vidc_dma_buf_get(struct msm_vidc_inst *inst, int fd)
 	}
 
 	/* get tracker instance from pool */
-	buf = msm_vidc_pool_alloc(inst, MSM_MEM_POOL_DMABUF);
+	buf = msm_memory_alloc(inst, MSM_MEM_POOL_DMABUF);
 	if (!buf) {
 		i_vpr_e(inst, "%s: dmabuf alloc failed\n", __func__);
 		dma_buf_put(dmabuf);
@@ -233,12 +118,12 @@ static struct dma_buf *msm_vidc_dma_buf_get(struct msm_vidc_inst *inst, int fd)
 	return dmabuf;
 }
 
-static void msm_vidc_dma_buf_put(struct msm_vidc_inst *inst, struct dma_buf *dmabuf)
+void msm_vidc_memory_put_dmabuf(struct msm_vidc_inst *inst, struct dma_buf *dmabuf)
 {
 	struct msm_memory_dmabuf *buf = NULL;
 	bool found = false;
 
-	if (!dmabuf) {
+	if (!inst || !dmabuf) {
 		d_vpr_e("%s: invalid params\n", __func__);
 		return;
 	}
@@ -267,13 +152,13 @@ static void msm_vidc_dma_buf_put(struct msm_vidc_inst *inst, struct dma_buf *dma
 	dma_buf_put(buf->dmabuf);
 
 	/* put tracker instance back to pool */
-	msm_vidc_pool_free(inst, buf);
+	msm_memory_free(inst, buf);
 }
 
-static void msm_vidc_dma_buf_put_completely(struct msm_vidc_inst *inst,
+void msm_vidc_memory_put_dmabuf_completely(struct msm_vidc_inst *inst,
 	struct msm_memory_dmabuf *buf)
 {
-	if (!buf) {
+	if (!inst || !buf) {
 		d_vpr_e("%s: invalid params\n", __func__);
 		return;
 	}
@@ -288,77 +173,83 @@ static void msm_vidc_dma_buf_put_completely(struct msm_vidc_inst *inst,
 			dma_buf_put(buf->dmabuf);
 
 			/* put tracker instance back to pool */
-			msm_vidc_pool_free(inst, buf);
+			msm_memory_free(inst, buf);
 			break;
 		}
 	}
 }
 
-static struct dma_buf_attachment *msm_vidc_dma_buf_attach(struct msm_vidc_core *core,
-	struct dma_buf *dbuf, struct device *dev)
+static bool is_non_secure_buffer(struct dma_buf *dmabuf)
+{
+	return mem_buf_dma_buf_exclusive_owner(dmabuf);
+}
+
+int msm_vidc_memory_map(struct msm_vidc_core *core, struct msm_vidc_map *map)
 {
 	int rc = 0;
 	struct dma_buf_attachment *attach = NULL;
-
-	if (!dbuf || !dev) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return NULL;
-	}
-
-	attach = dma_buf_attach(dbuf, dev);
-	if (IS_ERR_OR_NULL(attach)) {
-		rc = PTR_ERR(attach) ? PTR_ERR(attach) : -1;
-		d_vpr_e("Failed to attach dmabuf, error %d\n", rc);
-		return NULL;
-	}
-
-	return attach;
-}
-
-static int msm_vidc_dma_buf_detach(struct msm_vidc_core *core,
-	struct dma_buf *dbuf, struct dma_buf_attachment *attach)
-{
-	int rc = 0;
-
-	if (!dbuf || !attach) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return -EINVAL;
-	}
-
-	dma_buf_detach(dbuf, attach);
-
-	return rc;
-}
-
-static int msm_vidc_dma_buf_unmap_attachment(struct msm_vidc_core *core,
-	struct dma_buf_attachment *attach, struct sg_table *table)
-{
-	int rc = 0;
-
-	if (!attach || !table) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return -EINVAL;
-	}
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0))
-	dma_buf_unmap_attachment(attach, table, DMA_BIDIRECTIONAL);
-#else
-	dma_buf_unmap_attachment_unlocked(attach, table, DMA_BIDIRECTIONAL);
-#endif
-
-	return rc;
-}
-
-static struct sg_table *msm_vidc_dma_buf_map_attachment(
-	struct msm_vidc_core *core, struct dma_buf_attachment *attach)
-{
-	int rc = 0;
 	struct sg_table *table = NULL;
+	struct context_bank_info *cb = NULL;
 
-	if (!attach) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return NULL;
+	if (!core || !map) {
+		d_vpr_e("%s: invalid params\n",	__func__);
+		return -EINVAL;
 	}
+
+	if (map->refcount) {
+		map->refcount++;
+		goto exit;
+	}
+
+	/* reject non-secure mapping request for a secure buffer(or vice versa) */
+	if (map->region == MSM_VIDC_NON_SECURE || map->region == MSM_VIDC_NON_SECURE_PIXEL) {
+		if (!is_non_secure_buffer(map->dmabuf)) {
+			d_vpr_e("%s: secure buffer mapping to non-secure region %d not allowed\n",
+				__func__, map->region);
+			return -EINVAL;
+		}
+	} else {
+		if (is_non_secure_buffer(map->dmabuf)) {
+			d_vpr_e("%s: non-secure buffer mapping to secure region %d not allowed\n",
+				__func__, map->region);
+			return -EINVAL;
+		}
+	}
+
+	cb = get_context_bank(core, map->region);
+	if (!cb) {
+		d_vpr_e("%s: Failed to get context bank device\n",
+			 __func__);
+		rc = -EIO;
+		goto error_cb;
+	}
+
+	/* Prepare a dma buf for dma on the given device */
+	attach = dma_buf_attach(map->dmabuf, cb->dev);
+	if (IS_ERR_OR_NULL(attach)) {
+		rc = PTR_ERR(attach) ? PTR_ERR(attach) : -ENOMEM;
+		d_vpr_e("Failed to attach dmabuf\n");
+		goto error_attach;
+	}
+
+	if (!map->skip_delayed_unmap) {
+		/*
+		 * Get the scatterlist for the given attachment
+		 * Mapping of sg is taken care by map attachment
+		 */
+		attach->dma_map_attrs |= DMA_ATTR_DELAYED_UNMAP;
+	}
+
+	/*
+	 * We do not need dma_map function to perform cache operations
+	 * on the whole buffer size and hence pass skip sync flag.
+	 * We do the required cache operations separately for the
+	 * required buffer size
+	 */
+	attach->dma_map_attrs |= DMA_ATTR_SKIP_CPU_SYNC;
+	if (core->dt->sys_cache_present)
+		attach->dma_map_attrs |= 0UL;
+			/*TODO: define DMA_ATTR_IOMMU_USE_UPSTREAM_HINT;*/
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0))
 	table = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
@@ -366,23 +257,115 @@ static struct sg_table *msm_vidc_dma_buf_map_attachment(
 	table = dma_buf_map_attachment_unlocked(attach, DMA_BIDIRECTIONAL);
 #endif
 	if (IS_ERR_OR_NULL(table)) {
-		rc = PTR_ERR(table) ? PTR_ERR(table) : -1;
-		d_vpr_e("Failed to map table, error %d\n", rc);
-		return NULL;
+		rc = PTR_ERR(table) ? PTR_ERR(table) : -ENOMEM;
+		d_vpr_e("Failed to map table\n");
+		goto error_table;
 	}
 	if (!table->sgl) {
-		d_vpr_e("%s: sgl is NULL\n", __func__);
-		msm_vidc_dma_buf_unmap_attachment(core, attach, table);
-		return NULL;
+		d_vpr_e("sgl is NULL\n");
+		rc = -ENOMEM;
+		goto error_sg;
 	}
 
-	return table;
+	map->device_addr = table->sgl->dma_address;
+	map->table = table;
+	map->attach = attach;
+	map->refcount++;
+
+exit:
+	d_vpr_l(
+		"%s: type %11s, device_addr %#llx, refcount %d, region %d\n",
+		__func__, buf_name(map->type), map->device_addr, map->refcount, map->region);
+
+	return 0;
+
+error_sg:
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0))
+	dma_buf_unmap_attachment(attach, table, DMA_BIDIRECTIONAL);
+#else
+	dma_buf_unmap_attachment_unlocked(attach, table, DMA_BIDIRECTIONAL);
+#endif
+error_table:
+	dma_buf_detach(map->dmabuf, attach);
+error_attach:
+error_cb:
+	return rc;
 }
 
-static int msm_vidc_memory_alloc_map(struct msm_vidc_core *core, struct msm_vidc_mem *mem)
+int msm_vidc_memory_unmap(struct msm_vidc_core *core,
+	struct msm_vidc_map *map)
 {
+	int rc = 0;
+
+	if (!core || !map) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
+
+	if (map->refcount) {
+		map->refcount--;
+	} else {
+		d_vpr_e("unmap called while refcount is zero already\n");
+		return -EINVAL;
+	}
+
+	d_vpr_l(
+		"%s: type %11s, device_addr %#llx, refcount %d, region %d\n",
+		__func__, buf_name(map->type), map->device_addr, map->refcount, map->region);
+
+	if (map->refcount)
+		goto exit;
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0))
+	dma_buf_unmap_attachment(map->attach, map->table, DMA_BIDIRECTIONAL);
+#else
+	dma_buf_unmap_attachment_unlocked(map->attach, map->table, DMA_BIDIRECTIONAL);
+#endif
+	dma_buf_detach(map->dmabuf, map->attach);
+
+	map->device_addr = 0x0;
+	map->attach = NULL;
+	map->table = NULL;
+
+exit:
+	return rc;
+}
+
+int msm_vidc_vmem_alloc(unsigned long size, void **mem, const char *msg)
+{
+	int rc = 0;
+
+	if (*mem) {
+		d_vpr_e("%s: error: double alloc\n", msg);
+		rc = -EINVAL;
+	}
+
+	*mem = vzalloc(size);
+	if (!*mem) {
+		d_vpr_e("allocation failed for %s\n", msg);
+		rc = -ENOMEM;
+	}
+
+	return rc;
+}
+
+void msm_vidc_vmem_free(void **addr)
+{
+	if (addr && *addr) {
+		vfree(*addr);
+		*addr = NULL;
+	}
+}
+
+int msm_vidc_memory_alloc(struct msm_vidc_core *core, struct msm_vidc_alloc *mem)
+{
+	int rc = 0;
 	int size = 0;
-	struct context_bank_info *cb = NULL;
+	struct dma_heap *heap;
+	char *heap_name = NULL;
+	struct mem_buf_lend_kernel_arg lend_arg;
+	int vmids[1];
+	int perms[1];
 
 	if (!mem) {
 		d_vpr_e("%s: invalid params\n", __func__);
@@ -390,234 +373,446 @@ static int msm_vidc_memory_alloc_map(struct msm_vidc_core *core, struct msm_vidc
 	}
 
 	size = ALIGN(mem->size, SZ_4K);
-	mem->attrs = DMA_ATTR_WRITE_COMBINE;
 
-	cb = msm_vidc_get_context_bank_for_region(core, mem->region);
-	if (!cb) {
-		d_vpr_e("%s: Failed to get context bank device\n",
-			 __func__);
-		return -EIO;
+	if (mem->secure) {
+		switch (mem->region) {
+		case MSM_VIDC_SECURE_PIXEL:
+			heap_name = "qcom,secure-pixel";
+			break;
+		case MSM_VIDC_SECURE_NONPIXEL:
+			heap_name = "qcom,secure-non-pixel";
+			break;
+		case MSM_VIDC_SECURE_BITSTREAM:
+			heap_name = "qcom,system";
+			break;
+		default:
+			d_vpr_e("invalid secure region : %#x\n", mem->region);
+			return -EINVAL;
+		}
+	} else {
+		if (core->is_non_coherent)
+			heap_name = "qcom,system-uncached";
+		else
+			heap_name = "qcom,system";
 	}
 
-	mem->kvaddr = dma_alloc_attrs(cb->dev, size, &mem->device_addr, GFP_KERNEL,
-		mem->attrs);
-	if (!mem->kvaddr) {
-		d_vpr_e("%s: dma_alloc_attrs returned NULL\n", __func__);
-		return -ENOMEM;
+	heap = dma_heap_find(heap_name);
+	if (!heap) {
+		d_vpr_e("%s: No heap named %s\n", __func__, heap_name);
+		rc = -ENOMEM;
+		goto error;
+	}
+	mem->dmabuf = dma_heap_buffer_alloc(heap, size, 0, 0);
+	if (IS_ERR_OR_NULL(mem->dmabuf)) {
+		d_vpr_e("%s: dma heap %s alloc failed\n", __func__, heap_name);
+		mem->dmabuf = NULL;
+		rc = -ENOMEM;
+		goto error;
+	}
+
+	if (mem->secure && mem->type == MSM_VIDC_BUF_BIN)
+	{
+		vmids[0] = VMID_CP_BITSTREAM;
+		perms[0] = PERM_READ | PERM_WRITE;
+
+		lend_arg.nr_acl_entries = ARRAY_SIZE(vmids);
+		lend_arg.vmids = vmids;
+		lend_arg.perms = perms;
+
+		rc = mem_buf_lend(mem->dmabuf, &lend_arg);
+		if (rc) {
+			d_vpr_e("%s: BIN dmabuf %pK LEND failed, rc %d heap %s\n",
+				__func__, mem->dmabuf, rc, heap_name);
+			goto error;
+		}
+	}
+
+	if (mem->map_kernel) {
+		dma_buf_begin_cpu_access(mem->dmabuf, DMA_BIDIRECTIONAL);
+
+	/*
+	 * Waipio uses Kernel version 5.10.x,
+	 * Kalama uses Kernel Version 5.15.x,
+	 * Pineapple uses Kernel Version 5.18.x
+	 */
+#if (KERNEL_VERSION(5, 15, 0) > LINUX_VERSION_CODE)
+		mem->kvaddr = dma_buf_vmap(mem->dmabuf);
+		if (!mem->kvaddr) {
+			d_vpr_e("%s: kernel map failed\n", __func__);
+			rc = -EIO;
+			goto error;
+		}
+#elif (KERNEL_VERSION(6, 2, 0) > LINUX_VERSION_CODE)
+		rc = dma_buf_vmap(mem->dmabuf, &mem->dmabuf_map);
+		if (rc) {
+			d_vpr_e("%s: kernel map failed\n", __func__);
+			rc = -EIO;
+			goto error;
+		}
+		mem->kvaddr = mem->dmabuf_map.vaddr;
+#else
+		rc = dma_buf_vmap_unlocked(mem->dmabuf, &mem->dmabuf_map);
+		if (rc) {
+			d_vpr_e("%s: kernel map failed\n", __func__);
+			rc = -EIO;
+			goto error;
+		}
+		mem->kvaddr = mem->dmabuf_map.vaddr;
+#endif
 	}
 
 	d_vpr_h(
-		"%s: dmabuf %pK, size %d, buffer_type %s, secure %d, region %d\n",
-		__func__, mem->kvaddr, mem->size, buf_name(mem->type),
+		"%s: dmabuf %pK, size %d, kvaddr %pK, buffer_type %s, secure %d, region %d\n",
+		__func__, mem->dmabuf, mem->size, mem->kvaddr, buf_name(mem->type),
 		mem->secure, mem->region);
+	trace_msm_vidc_dma_buffer("ALLOC", mem->dmabuf, mem->size, mem->kvaddr,
+		buf_name(mem->type), mem->secure, mem->region);
 
 	return 0;
+
+error:
+	msm_vidc_memory_free(core, mem);
+	return rc;
 }
 
-static int msm_vidc_memory_unmap_free(struct msm_vidc_core *core, struct msm_vidc_mem *mem)
+int msm_vidc_memory_free(struct msm_vidc_core *core, struct msm_vidc_alloc *mem)
 {
 	int rc = 0;
-	struct context_bank_info *cb = NULL;
 
-	if (!mem || !mem->device_addr || !mem->kvaddr) {
+	if (!mem || !mem->dmabuf) {
 		d_vpr_e("%s: invalid params\n", __func__);
 		return -EINVAL;
 	}
 
 	d_vpr_h(
 		"%s: dmabuf %pK, size %d, kvaddr %pK, buffer_type %s, secure %d, region %d\n",
-		__func__, (dma_addr_t *)mem->device_addr, mem->size, mem->kvaddr,
+		__func__, mem->dmabuf, mem->size, mem->kvaddr, buf_name(mem->type),
+		mem->secure, mem->region);
+
+	trace_msm_vidc_dma_buffer("FREE", mem->dmabuf, mem->size, mem->kvaddr,
 		buf_name(mem->type), mem->secure, mem->region);
 
-	cb = msm_vidc_get_context_bank_for_region(core, mem->region);
-	if (!cb) {
-		d_vpr_e("%s: Failed to get context bank device\n",
-			 __func__);
-		return -EIO;
+	if (mem->kvaddr) {
+#if (KERNEL_VERSION(5, 15, 0) > LINUX_VERSION_CODE)
+		dma_buf_vunmap(mem->dmabuf, mem->kvaddr);
+#elif (KERNEL_VERSION(6, 2, 0) > LINUX_VERSION_CODE)
+		dma_buf_vunmap(mem->dmabuf, &mem->dmabuf_map);
+#else
+		dma_buf_vunmap_unlocked(mem->dmabuf, &mem->dmabuf_map);
+#endif
+		mem->kvaddr = NULL;
+		dma_buf_end_cpu_access(mem->dmabuf, DMA_BIDIRECTIONAL);
 	}
 
-	dma_free_attrs(cb->dev, mem->size, mem->kvaddr, mem->device_addr,
-		       mem->attrs);
-
-	mem->kvaddr = NULL;
-	mem->device_addr = 0;
+	if (mem->dmabuf) {
+		dma_heap_buffer_free(mem->dmabuf);
+		mem->dmabuf = NULL;
+	}
 
 	return rc;
-}
-
-static int msm_vidc_dma_map_page(struct msm_vidc_core *core,
-				 struct msm_vidc_mem *mem)
-{
-	int rc = 0;
-	struct context_bank_info *cb = NULL;
-	dma_addr_t dma_addr;
-
-	if (!mem) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return -EINVAL;
-	}
-
-	if (mem->refcount) {
-		mem->refcount++;
-		goto exit;
-	}
-
-	cb = msm_vidc_get_context_bank_for_region(core, mem->region);
-	if (!cb) {
-		d_vpr_e("%s: Failed to get context bank device\n",
-			__func__);
-		rc = -EIO;
-		goto error;
-	}
-
-	/* map and obtain dma address for physically contiguous memory */
-	dma_addr = dma_map_page(cb->dev, phys_to_page(mem->phys_addr),
-				0, (size_t)mem->size, mem->direction);
-
-	rc = dma_mapping_error(cb->dev, dma_addr);
-	if (rc) {
-		d_vpr_e("%s: Failed to map memory\n", __func__);
-		goto error;
-	}
-
-	mem->device_addr = dma_addr;
-	mem->refcount++;
-
-exit:
-	d_vpr_l("%s: type %11s, device_addr %#llx, size %u region %d, refcount %d\n",
-		__func__, buf_name(mem->type), mem->device_addr,
-		mem->size, mem->region, mem->refcount);
-
-	return 0;
-
-error:
-	return rc;
-}
-
-static int msm_vidc_dma_unmap_page(struct msm_vidc_core *core,
-				   struct msm_vidc_mem *mem)
-{
-	int rc = 0;
-	struct context_bank_info *cb = NULL;
-
-	if (!mem) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return -EINVAL;
-	}
-
-	if (mem->refcount) {
-		mem->refcount--;
-	} else {
-		d_vpr_e("unmap called while refcount is zero already\n");
-		return -EINVAL;
-	}
-
-	cb = msm_vidc_get_context_bank_for_region(core, mem->region);
-	if (!cb) {
-		d_vpr_e("%s: Failed to get context bank device\n",
-			__func__);
-		rc = -EIO;
-		goto exit;
-	}
-
-	d_vpr_l("%s: type %11s, device_addr %#llx, refcount %d, region %d\n",
-		__func__, buf_name(mem->type), mem->device_addr,
-		mem->refcount, mem->region);
-
-	if (mem->refcount)
-		goto exit;
-
-	dma_unmap_page(cb->dev, (dma_addr_t)(mem->device_addr),
-		       mem->size, mem->direction);
-
-	mem->device_addr = 0x0;
-
-exit:
-	return rc;
-}
-
-static u32 msm_vidc_buffer_region(struct msm_vidc_inst *inst,
-	enum msm_vidc_buffer_type buffer_type)
-{
-	return MSM_VIDC_NON_SECURE;
-}
-
-static int msm_vidc_iommu_map(struct msm_vidc_core *core, struct msm_vidc_mem *mem)
-{
-	int rc = 0;
-	struct context_bank_info *cb = NULL;
-
-	if (!mem) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return -EINVAL;
-	}
-
-	cb = msm_vidc_get_context_bank_for_region(core, mem->region);
-	if (!cb) {
-		d_vpr_e("%s: Failed to get context bank device\n", __func__);
-		return -EIO;
-	}
-
-	rc = iommu_map(cb->domain, mem->device_addr, mem->phys_addr,
-		mem->size, IOMMU_READ | IOMMU_WRITE | IOMMU_MMIO, GFP_KERNEL);
-	if (rc) {
-		d_vpr_e("iommu_map failed for device_addr 0x%llx, size %d, rc:%d\n",
-			mem->device_addr, mem->size, rc);
-		return rc;
-	}
-
-	d_vpr_h("%s: phys_addr %#llx size %#x device_addr %#llx, mem_region %d\n",
-		__func__, mem->phys_addr, mem->size, mem->device_addr, mem->region);
-
-	return rc;
-}
-
-static int msm_vidc_iommu_unmap(struct msm_vidc_core *core, struct msm_vidc_mem *mem)
-{
-	int rc = 0;
-	struct context_bank_info *cb = NULL;
-
-	if (!mem) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return -EINVAL;
-	}
-
-	cb = msm_vidc_get_context_bank_for_region(core, mem->region);
-	if (!cb) {
-		d_vpr_e("%s: Failed to get context bank device\n",
-			__func__);
-		return -EIO;
-	}
-
-	d_vpr_h("%s: phys_addr %#llx size %#x device_addr %#llx, mem_region %d\n",
-		__func__, mem->phys_addr, mem->size, mem->device_addr, mem->region);
-
-	iommu_unmap(cb->domain, mem->device_addr, mem->size);
-	mem->device_addr = 0x0;
-	mem->phys_addr = 0x0;
-	mem->size = 0;
-
-	return rc;
-}
-
-static const struct msm_vidc_memory_ops msm_mem_ops = {
-	.dma_buf_get                    = msm_vidc_dma_buf_get,
-	.dma_buf_put                    = msm_vidc_dma_buf_put,
-	.dma_buf_put_completely         = msm_vidc_dma_buf_put_completely,
-	.dma_buf_attach                 = msm_vidc_dma_buf_attach,
-	.dma_buf_detach                 = msm_vidc_dma_buf_detach,
-	.dma_buf_map_attachment         = msm_vidc_dma_buf_map_attachment,
-	.dma_buf_unmap_attachment       = msm_vidc_dma_buf_unmap_attachment,
-	.memory_alloc_map               = msm_vidc_memory_alloc_map,
-	.memory_unmap_free              = msm_vidc_memory_unmap_free,
-	.mem_dma_map_page               = msm_vidc_dma_map_page,
-	.mem_dma_unmap_page             = msm_vidc_dma_unmap_page,
-	.buffer_region                  = msm_vidc_buffer_region,
-	.iommu_map                      = msm_vidc_iommu_map,
-	.iommu_unmap                    = msm_vidc_iommu_unmap,
 };
 
-const struct msm_vidc_memory_ops *get_mem_ops(void)
+void *msm_memory_alloc(struct msm_vidc_inst *inst, enum msm_memory_pool_type type)
 {
-	return &msm_mem_ops;
+	struct msm_memory_alloc_header *hdr = NULL;
+	struct msm_memory_pool *pool;
+	int rc = 0;
+
+	if (!inst || type < 0 || type >= MSM_MEM_POOL_MAX) {
+		d_vpr_e("%s: Invalid params\n", __func__);
+		return NULL;
+	}
+	pool = &inst->pool[type];
+
+	if (!list_empty(&pool->free_pool)) {
+		/* get 1st node from free pool */
+		hdr = list_first_entry(&pool->free_pool,
+			struct msm_memory_alloc_header, list);
+		list_del_init(&hdr->list);
+
+		/* reset existing data */
+		memset((char *)hdr->buf, 0, pool->size);
+
+		/* add to busy pool */
+		list_add_tail(&hdr->list, &pool->busy_pool);
+
+		/* set busy flag to true. This is to catch double free request */
+		hdr->busy = true;
+
+		return hdr->buf;
+	}
+
+	rc = msm_vidc_vmem_alloc(pool->size + sizeof(struct msm_memory_alloc_header),
+			(void **)&hdr, __func__);
+	if (rc)
+		return NULL;
+
+	INIT_LIST_HEAD(&hdr->list);
+	hdr->type = type;
+	hdr->busy = true;
+	hdr->buf = (void *)(hdr + 1);
+	list_add_tail(&hdr->list, &pool->busy_pool);
+
+	return hdr->buf;
 }
+
+void msm_memory_free(struct msm_vidc_inst *inst, void *vidc_buf)
+{
+	struct msm_memory_alloc_header *hdr;
+	struct msm_memory_pool *pool;
+
+	if (!inst || !vidc_buf) {
+		d_vpr_e("%s: Invalid params\n", __func__);
+		return;
+	}
+	hdr = (struct msm_memory_alloc_header *)vidc_buf - 1;
+
+	/* sanitize buffer addr */
+	if (hdr->buf != vidc_buf) {
+		i_vpr_e(inst, "%s: invalid buf addr %p\n", __func__, vidc_buf);
+		return;
+	}
+
+	/* sanitize pool type */
+	if (hdr->type < 0 || hdr->type >= MSM_MEM_POOL_MAX) {
+		i_vpr_e(inst, "%s: invalid pool type %#x\n", __func__, hdr->type);
+		return;
+	}
+	pool = &inst->pool[hdr->type];
+
+	/* catch double-free request */
+	if (!hdr->busy) {
+		i_vpr_e(inst, "%s: double free request. type %s, addr %p\n", __func__,
+			pool->name, vidc_buf);
+		return;
+	}
+	hdr->busy = false;
+
+	/* remove from busy pool */
+	list_del_init(&hdr->list);
+
+	/* add to free pool */
+	list_add_tail(&hdr->list, &pool->free_pool);
+}
+
+static void msm_vidc_destroy_pool_buffers(struct msm_vidc_inst *inst,
+	enum msm_memory_pool_type type)
+{
+	struct msm_memory_alloc_header *hdr, *dummy;
+	struct msm_memory_pool *pool;
+	u32 fcount = 0, bcount = 0;
+
+	if (!inst || type < 0 || type >= MSM_MEM_POOL_MAX) {
+		d_vpr_e("%s: Invalid params\n", __func__);
+		return;
+	}
+	pool = &inst->pool[type];
+
+	/* detect memleak: busy pool is expected to be empty here */
+	if (!list_empty(&pool->busy_pool))
+		i_vpr_e(inst, "%s: destroy request on active buffer. type %s\n",
+			__func__, pool->name);
+
+	/* destroy all free buffers */
+	list_for_each_entry_safe(hdr, dummy, &pool->free_pool, list) {
+		list_del(&hdr->list);
+		msm_vidc_vmem_free((void **)&hdr);
+		fcount++;
+	}
+
+	/* destroy all busy buffers */
+	list_for_each_entry_safe(hdr, dummy, &pool->busy_pool, list) {
+		list_del(&hdr->list);
+		msm_vidc_vmem_free((void **)&hdr);
+		bcount++;
+	}
+
+	i_vpr_h(inst, "%s: type: %23s, count: free %2u, busy %2u\n",
+		__func__, pool->name, fcount, bcount);
+}
+
+void msm_memory_pools_deinit(struct msm_vidc_inst *inst)
+{
+	u32 i = 0;
+
+	if (!inst) {
+		d_vpr_e("%s: Invalid params\n", __func__);
+		return;
+	}
+
+	/* destroy all buffers from all pool types */
+	for (i = 0; i < MSM_MEM_POOL_MAX; i++)
+		msm_vidc_destroy_pool_buffers(inst, i);
+}
+
+struct msm_vidc_type_size_name {
+	enum msm_memory_pool_type type;
+	u32                       size;
+	char                     *name;
+};
+
+static struct msm_vidc_type_size_name buftype_size_name_arr[] = {
+	{MSM_MEM_POOL_BUFFER,     sizeof(struct msm_vidc_buffer),     "MSM_MEM_POOL_BUFFER"     },
+	{MSM_MEM_POOL_MAP,        sizeof(struct msm_vidc_map),        "MSM_MEM_POOL_MAP"        },
+	{MSM_MEM_POOL_ALLOC,      sizeof(struct msm_vidc_alloc),      "MSM_MEM_POOL_ALLOC"      },
+	{MSM_MEM_POOL_TIMESTAMP,  sizeof(struct msm_vidc_timestamp),  "MSM_MEM_POOL_TIMESTAMP"  },
+	{MSM_MEM_POOL_DMABUF,     sizeof(struct msm_memory_dmabuf),   "MSM_MEM_POOL_DMABUF"     },
+};
+
+int msm_memory_pools_init(struct msm_vidc_inst *inst)
+{
+	u32 i;
+
+	if (!inst) {
+		d_vpr_e("%s: Invalid params\n", __func__);
+		return -EINVAL;
+	}
+
+	if (ARRAY_SIZE(buftype_size_name_arr) != MSM_MEM_POOL_MAX) {
+		i_vpr_e(inst, "%s: num elements mismatch %lu %u\n", __func__,
+			ARRAY_SIZE(buftype_size_name_arr), MSM_MEM_POOL_MAX);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < MSM_MEM_POOL_MAX; i++) {
+		if (i != buftype_size_name_arr[i].type) {
+			i_vpr_e(inst, "%s: type mismatch %u %u\n", __func__,
+				i, buftype_size_name_arr[i].type);
+			return -EINVAL;
+		}
+		inst->pool[i].size = buftype_size_name_arr[i].size;
+		inst->pool[i].name = buftype_size_name_arr[i].name;
+		INIT_LIST_HEAD(&inst->pool[i].free_pool);
+		INIT_LIST_HEAD(&inst->pool[i].busy_pool);
+	}
+
+	return 0;
+}
+
+
+int msm_memory_cache_operations(struct msm_vidc_inst *inst,
+	struct dma_buf *dbuf, enum msm_memory_cache_type cache_type,
+	u32 offset, u32 size)
+{
+	struct msm_vidc_core *core;
+	int rc = 0;
+
+	if (!inst || !dbuf) {
+		d_vpr_e("%s: Invalid params\n", __func__);
+		return -EINVAL;
+	}
+	core = inst->core;
+
+	/* skip cache ops for "dma-coherent" enabled chipsets */
+	if (!core->is_non_coherent)
+		return 0;
+
+	if (!inst) {
+		d_vpr_e("%s: invalid parameters\n", __func__);
+		return -EINVAL;
+	}
+
+	if (!dbuf) {
+		i_vpr_e(inst, "%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
+
+	// TODO gdoddabe: need to review DMA buf CMO's according to kernel version
+	switch (cache_type) {
+	case MSM_MEM_CACHE_CLEAN_INVALIDATE:
+		rc = dma_buf_end_cpu_access_partial(dbuf, DMA_FROM_DEVICE,
+				offset, size);
+		if (rc)
+			break;
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+		rc = dma_buf_begin_cpu_access_partial(dbuf, DMA_FROM_DEVICE,
+				offset, size);
+#endif
+		break;
+	case MSM_MEM_CACHE_INVALIDATE:
+		rc = dma_buf_begin_cpu_access_partial(dbuf, DMA_FROM_DEVICE,
+				offset, size);
+		break;
+	default:
+		i_vpr_e(inst, "%s: cache (%d) operation not supported\n",
+			__func__, cache_type);
+		rc = -EINVAL;
+		break;
+	}
+
+	return rc;
+}
+
+/*
+int msm_smem_memory_prefetch(struct msm_vidc_inst *inst)
+{
+	int i, rc = 0;
+	struct memory_regions *vidc_regions = NULL;
+	struct ion_prefetch_region ion_region[MEMORY_REGIONS_MAX];
+
+	if (!inst) {
+		d_vpr_e("%s: invalid parameters\n", __func__);
+		return -EINVAL;
+	}
+
+	vidc_regions = &inst->regions;
+	if (vidc_regions->num_regions > MEMORY_REGIONS_MAX) {
+		i_vpr_e(inst, "%s: invalid num_regions %d, max %d\n",
+			__func__, vidc_regions->num_regions,
+			MEMORY_REGIONS_MAX);
+		return -EINVAL;
+	}
+
+	memset(ion_region, 0, sizeof(ion_region));
+	for (i = 0; i < vidc_regions->num_regions; i++) {
+		ion_region[i].size = vidc_regions->region[i].size;
+		ion_region[i].vmid = vidc_regions->region[i].vmid;
+	}
+
+	rc = msm_ion_heap_prefetch(ION_SECURE_HEAP_ID, ion_region,
+		vidc_regions->num_regions);
+	if (rc)
+		i_vpr_e(inst, "%s: prefetch failed, ret: %d\n",
+			__func__, rc);
+	else
+		i_vpr_l(inst, "%s: prefetch succeeded\n", __func__);
+
+	return rc;
+}
+
+int msm_smem_memory_drain(struct msm_vidc_inst *inst)
+{
+	int i, rc = 0;
+	struct memory_regions *vidc_regions = NULL;
+	struct ion_prefetch_region ion_region[MEMORY_REGIONS_MAX];
+
+	if (!inst) {
+		d_vpr_e("%s: invalid parameters\n", __func__);
+		return -EINVAL;
+	}
+
+	vidc_regions = &inst->regions;
+	if (vidc_regions->num_regions > MEMORY_REGIONS_MAX) {
+		i_vpr_e(inst, "%s: invalid num_regions %d, max %d\n",
+			__func__, vidc_regions->num_regions,
+			MEMORY_REGIONS_MAX);
+		return -EINVAL;
+	}
+
+	memset(ion_region, 0, sizeof(ion_region));
+	for (i = 0; i < vidc_regions->num_regions; i++) {
+		ion_region[i].size = vidc_regions->region[i].size;
+		ion_region[i].vmid = vidc_regions->region[i].vmid;
+	}
+
+	rc = msm_ion_heap_drain(ION_SECURE_HEAP_ID, ion_region,
+		vidc_regions->num_regions);
+	if (rc)
+		i_vpr_e(inst, "%s: drain failed, ret: %d\n", __func__, rc);
+	else
+		i_vpr_l(inst, "%s: drain succeeded\n", __func__);
+
+	return rc;
+}
+*/

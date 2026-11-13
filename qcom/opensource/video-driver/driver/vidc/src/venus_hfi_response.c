@@ -4,17 +4,17 @@
  * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
+#include <linux/devcoredump.h>
 #include <linux/of_address.h>
-
 #include "hfi_packet.h"
 #include "venus_hfi.h"
 #include "venus_hfi_response.h"
 #include "msm_vidc_debug.h"
 #include "msm_vidc_driver.h"
 #include "msm_vdec.h"
+#include "msm_vidc_control.h"
 #include "msm_vidc_memory.h"
 #include "msm_vidc_fence.h"
-#include "msm_vidc_platform.h"
 
 #define is_in_range(range, val) (((range.begin) < (val)) && ((range.end) > (val)))
 
@@ -44,18 +44,19 @@ struct msm_vidc_hfi_packet_handle {
 void print_psc_properties(const char *str, struct msm_vidc_inst *inst,
 	struct msm_vidc_subscription_params subsc_params)
 {
+	if (!inst || !str)
+		return;
+
 	i_vpr_h(inst,
-		"%s: width %d, height %d, crop offsets[0] %#x, crop offsets[1] %#x, bit depth %#x, coded frames %d fw min count %d, poc %d, color info %d, profile %d, level %d, tier %d, fg present %d, sb enabled %d, max_num_reorder_frames %d, max_dec_frame_buffering_count %d\n",
+		"%s: width %d, height %d, crop offsets[0] %#x, crop offsets[1] %#x, bit depth %#x, coded frames %d "
+		"fw min count %d, poc %d, color info %d, profile %d, level %d, tier %d\n",
 		str, (subsc_params.bitstream_resolution & HFI_BITMASK_BITSTREAM_WIDTH) >> 16,
 		(subsc_params.bitstream_resolution & HFI_BITMASK_BITSTREAM_HEIGHT),
 		subsc_params.crop_offsets[0], subsc_params.crop_offsets[1],
 		subsc_params.bit_depth, subsc_params.coded_frames,
 		subsc_params.fw_min_count, subsc_params.pic_order_cnt,
 		subsc_params.color_info, subsc_params.profile, subsc_params.level,
-		subsc_params.tier, subsc_params.av1_film_grain_present,
-		subsc_params.av1_super_block_enabled,
-		(subsc_params.max_num_reorder_frames >> 16),
-		(subsc_params.max_num_reorder_frames & 0x00FF));
+		subsc_params.tier);
 }
 
 static void print_sfr_message(struct msm_vidc_core *core)
@@ -66,18 +67,18 @@ static void print_sfr_message(struct msm_vidc_core *core)
 
 	vsfr = (struct msm_vidc_sfr *)core->sfr.align_virtual_addr;
 	if (vsfr) {
-		if (vsfr->buf_size != core->sfr.mem_size) {
+		if (vsfr->bufSize != core->sfr.mem_size) {
 			d_vpr_e("Invalid SFR buf size %d actual %d\n",
-				vsfr->buf_size, core->sfr.mem_size);
+				vsfr->bufSize, core->sfr.mem_size);
 			return;
 		}
-		vsfr_size = core->sfr.mem_size - sizeof(u32);
+		vsfr_size = vsfr->bufSize - sizeof(u32);
 		p = memchr(vsfr->rg_data, '\0', vsfr_size);
 		/* SFR isn't guaranteed to be NULL terminated */
 		if (p == NULL)
 			vsfr->rg_data[vsfr_size - 1] = '\0';
 
-		d_vpr_e(FMT_STRING_MSG_SFR, vsfr->rg_data);
+		d_vpr_e("SFR Message from FW: %s\n", vsfr->rg_data);
 	}
 }
 
@@ -129,6 +130,11 @@ u32 vidc_port_from_hfi(struct msm_vidc_inst *inst,
 bool is_valid_hfi_port(struct msm_vidc_inst *inst, u32 port,
 	u32 buffer_type, const char *func)
 {
+	if (!inst) {
+		i_vpr_e(inst, "%s: invalid params\n", func);
+		return false;
+	}
+
 	if (port == HFI_PORT_NONE &&
 		buffer_type != HFI_BUFFER_ARP &&
 		buffer_type != HFI_BUFFER_PERSIST)
@@ -148,6 +154,11 @@ invalid:
 bool is_valid_hfi_buffer_type(struct msm_vidc_inst *inst,
 	u32 buffer_type, const char *func)
 {
+	if (!inst) {
+		i_vpr_e(inst, "%s: invalid params\n", func);
+		return false;
+	}
+
 	if (buffer_type != HFI_BUFFER_BITSTREAM &&
 	    buffer_type != HFI_BUFFER_RAW &&
 	    buffer_type != HFI_BUFFER_METADATA &&
@@ -158,13 +169,20 @@ bool is_valid_hfi_buffer_type(struct msm_vidc_inst *inst,
 	    buffer_type != HFI_BUFFER_LINE &&
 	    buffer_type != HFI_BUFFER_DPB &&
 	    buffer_type != HFI_BUFFER_PERSIST &&
-	    buffer_type != HFI_BUFFER_VPSS &&
-	    buffer_type != HFI_BUFFER_PARTIAL_DATA) {
+	    buffer_type != HFI_BUFFER_VPSS) {
 		i_vpr_e(inst, "%s: invalid buffer type %#x\n",
 			func, buffer_type);
 		return false;
 	}
 	return true;
+}
+
+static int signal_session_msg_receipt(struct msm_vidc_inst *inst,
+	enum signal_session_response cmd)
+{
+	if (cmd < MAX_SIGNAL)
+		complete(&inst->completions[cmd]);
+	return 0;
 }
 
 int validate_packet(u8 *response_pkt, u8 *core_resp_pkt,
@@ -205,12 +223,17 @@ int validate_packet(u8 *response_pkt, u8 *core_resp_pkt,
 	return 0;
 }
 
-int validate_hdr_packet(struct msm_vidc_core *core,
+static int validate_hdr_packet(struct msm_vidc_core *core,
 	struct hfi_header *hdr, const char *function)
 {
 	struct hfi_packet *packet;
 	u8 *pkt;
 	int i, rc = 0;
+
+	if (!core || !hdr || !function) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
 
 	if (hdr->size < sizeof(struct hfi_header) + sizeof(struct hfi_packet)) {
 		d_vpr_e("%s: invalid header size %d\n", __func__, hdr->size);
@@ -236,6 +259,11 @@ static bool check_for_packet_payload(struct msm_vidc_inst *inst,
 	struct hfi_packet *pkt, const char *func)
 {
 	u32 payload_size = 0;
+
+	if (!inst || !pkt) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return false;
+	}
 
 	if (pkt->payload_info == HFI_PAYLOAD_NONE) {
 		i_vpr_h(inst, "%s: no playload available for packet %#x\n",
@@ -275,35 +303,29 @@ static bool check_for_packet_payload(struct msm_vidc_inst *inst,
 	return true;
 }
 
-static int handle_session_last_flag_info(struct msm_vidc_inst *inst,
-		struct hfi_packet *pkt)
+static bool check_last_flag(struct msm_vidc_inst *inst,
+	struct hfi_packet *pkt)
 {
-	int rc = 0;
+	struct hfi_buffer *buffer;
 
-	if (pkt->type == HFI_INFO_HFI_FLAG_PSC_LAST) {
-		if (msm_vidc_allow_psc_last_flag(inst))
-			rc = msm_vidc_process_psc_last_flag(inst);
-		else
-			rc = -EINVAL;
-	} else if (pkt->type == HFI_INFO_HFI_FLAG_DRAIN_LAST) {
-		if (msm_vidc_allow_drain_last_flag(inst))
-			rc = msm_vidc_process_drain_last_flag(inst);
-		else
-			rc = -EINVAL;
-	} else {
-		i_vpr_e(inst, "%s: invalid packet type %#x\n", __func__,
-			pkt->type);
+	if (!inst || !pkt) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return false;
 	}
 
-	if (rc)
-		msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
-
-	return rc;
+	buffer = (struct hfi_buffer *)((u8 *)pkt + sizeof(struct hfi_packet));
+	if (buffer->flags & HFI_BUF_FW_FLAG_LAST) {
+		i_vpr_h(inst, "%s: received last flag on FBD, index: %d\n",
+			__func__, buffer->index);
+		return true;
+	}
+	return false;
 }
 
 static int handle_session_info(struct msm_vidc_inst *inst,
 	struct hfi_packet *pkt)
 {
+
 	int rc = 0;
 	char *info;
 
@@ -315,28 +337,12 @@ static int handle_session_info(struct msm_vidc_inst *inst,
 		info = "data corrupt";
 		inst->hfi_frame_info.data_corrupt = 1;
 		break;
-	case HFI_INFO_BUFFER_OVERFLOW:
-		info = "buffer overflow";
-		inst->hfi_frame_info.overflow = 1;
-		break;
-	case HFI_INFO_FENCE_SIGNAL_ERROR:
-		info = "synx v2 fence error";
-		inst->hfi_frame_info.fence_error = 1;
-		break;
-	case HFI_INFO_HFI_FLAG_DRAIN_LAST:
-		info = "drain last flag";
-		rc = handle_session_last_flag_info(inst, pkt);
-		break;
-	case HFI_INFO_HFI_FLAG_PSC_LAST:
-		info = "drc last flag";
-		rc = handle_session_last_flag_info(inst, pkt);
-		break;
 	default:
 		info = "unknown";
 		break;
 	}
 
-	i_vpr_h(inst, "session info (%#x): %s\n", pkt->type, info);
+	i_vpr_e(inst, "session info (%#x): %s\n", pkt->type, info);
 
 	return rc;
 }
@@ -366,6 +372,9 @@ static int handle_session_error(struct msm_vidc_inst *inst,
 	case HFI_ERROR_FATAL:
 		error = "fatal error";
 		break;
+	case HFI_ERROR_STREAM_UNSUPPORTED:
+		error = "stream unsupported";
+		break;
 	default:
 		error = "unknown";
 		break;
@@ -374,8 +383,72 @@ static int handle_session_error(struct msm_vidc_inst *inst,
 	i_vpr_e(inst, "%s: session error received %#x: %s\n",
 		__func__, pkt->type, error);
 
-	rc = msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+	rc = msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 	return rc;
+}
+
+void fw_coredump(struct msm_vidc_core *core)
+{
+	int rc = 0;
+	struct platform_device *pdev;
+	struct device_node *node = NULL;
+	struct resource res = {0};
+	phys_addr_t mem_phys = 0;
+	size_t res_size = 0;
+	void *mem_va = NULL;
+	char *data = NULL, *dump = NULL;
+	u64 total_size;
+
+	if (!core) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return;
+	}
+	pdev = core->pdev;
+
+	node = of_parse_phandle(pdev->dev.of_node, "memory-region", 0);
+	if (!node) {
+		d_vpr_e("%s: DT error getting \"memory-region\" property\n",
+			__func__);
+		return;
+	}
+
+	rc = of_address_to_resource(node, 0, &res);
+	if (rc) {
+		d_vpr_e("%s: error %d while getting \"memory-region\" resource\n",
+			__func__, rc);
+		return;
+	}
+
+	mem_phys = res.start;
+	res_size = (size_t)resource_size(&res);
+
+	mem_va = memremap(mem_phys, res_size, MEMREMAP_WC);
+	if (!mem_va) {
+		d_vpr_e("%s: unable to remap firmware memory\n", __func__);
+		return;
+	}
+	total_size = res_size + TOTAL_QSIZE + ALIGNED_SFR_SIZE;
+
+	data = vmalloc(total_size);
+	if (!data) {
+		memunmap(mem_va);
+		return;
+	}
+	dump = data;
+
+	/* copy firmware dump */
+	memcpy(data, mem_va, res_size);
+	memunmap(mem_va);
+
+	/* copy queues(cmd, msg, dbg) dump(along with headers) */
+	data += res_size;
+	memcpy(data, (char *)core->iface_q_table.align_virtual_addr, TOTAL_QSIZE);
+
+	/* copy sfr dump */
+	data += TOTAL_QSIZE;
+	memcpy(data, (char *)core->sfr.align_virtual_addr, ALIGNED_SFR_SIZE);
+
+	dev_coredumpv(&pdev->dev, dump, total_size, GFP_KERNEL);
 }
 
 int handle_system_error(struct msm_vidc_core *core,
@@ -383,29 +456,26 @@ int handle_system_error(struct msm_vidc_core *core,
 {
 	bool bug_on = false;
 
-	d_vpr_e(FMT_STRING_SYSTEM_ERROR, __func__);
+	d_vpr_e("%s: system error received\n", __func__);
 	print_sfr_message(core);
+	venus_hfi_noc_error_info(core);
 
 	if (pkt) {
 		/* enable force bugon for requested type */
-		if (pkt->type == HFI_SYS_ERROR_FATAL) {
+		if (pkt->type == HFI_SYS_ERROR_FATAL)
 			bug_on = !!(msm_vidc_enable_bugon & MSM_VIDC_BUG_ON_FATAL);
-		} else if (pkt->type == HFI_SYS_ERROR_NOC) {
+		else if (pkt->type == HFI_SYS_ERROR_NOC)
 			bug_on = !!(msm_vidc_enable_bugon & MSM_VIDC_BUG_ON_NOC);
-			venus_hfi_noc_error_info(core);
-		} else if (pkt->type == HFI_SYS_ERROR_WD_TIMEOUT) {
+		else if (pkt->type == HFI_SYS_ERROR_WD_TIMEOUT)
 			bug_on = !!(msm_vidc_enable_bugon & MSM_VIDC_BUG_ON_WD_TIMEOUT);
-		}
+
 		if (bug_on) {
 			d_vpr_e("%s: force bugon for type %#x\n", __func__, pkt->type);
 			MSM_VIDC_FATAL(true);
 		}
 	}
 
-	core_lock(core, __func__);
-	msm_vidc_change_core_state(core, MSM_VIDC_CORE_ERROR, __func__);
-	msm_vidc_core_deinit_locked(core, true);
-	core_unlock(core, __func__);
+	msm_vidc_core_deinit(core, true);
 
 	return 0;
 }
@@ -413,23 +483,13 @@ int handle_system_error(struct msm_vidc_core *core,
 static int handle_system_init(struct msm_vidc_core *core,
 	struct hfi_packet *pkt)
 {
-	if (!(pkt->flags & HFI_FW_FLAGS_SUCCESS)) {
+	if (pkt->flags & HFI_FW_FLAGS_SUCCESS) {
+		d_vpr_h("%s: successful\n", __func__);
+		complete(&core->init_done);
+	} else {
 		d_vpr_h("%s: unhandled. flags=%d\n", __func__, pkt->flags);
-		return 0;
 	}
 
-	core_lock(core, __func__);
-	if (pkt->packet_id != core->sys_init_id) {
-		d_vpr_e("%s: invalid pkt id %u, expected %u\n", __func__,
-			pkt->packet_id, core->sys_init_id);
-		goto unlock;
-	}
-
-	msm_vidc_change_core_state(core, MSM_VIDC_CORE_INIT, __func__);
-	d_vpr_h("%s: successful\n", __func__);
-
-unlock:
-	core_unlock(core, __func__);
 	return 0;
 }
 
@@ -464,8 +524,7 @@ static int handle_session_start(struct msm_vidc_inst *inst,
 static int handle_session_stop(struct msm_vidc_inst *inst,
 	struct hfi_packet *pkt)
 {
-	int rc = 0;
-	enum signal_session_response signal_type = -1;
+	int signal_type = -1;
 
 	if (pkt->flags & HFI_FW_FLAGS_SUCCESS)
 		i_vpr_h(inst, "%s: successful for port %d\n",
@@ -496,46 +555,37 @@ static int handle_session_stop(struct msm_vidc_inst *inst,
 		return -EINVAL;
 	}
 
-	if (signal_type != -1) {
-		rc = msm_vidc_process_stop_done(inst, signal_type);
-		if (rc)
-			return rc;
-	}
-
+	if (signal_type != -1)
+		signal_session_msg_receipt(inst, signal_type);
 	return 0;
 }
 
 static int handle_session_drain(struct msm_vidc_inst *inst,
-				struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
-	int rc = 0;
-
 	if (pkt->flags & HFI_FW_FLAGS_SUCCESS)
 		i_vpr_h(inst, "%s: successful\n", __func__);
-
-	rc = msm_vidc_process_drain_done(inst);
-	if (rc)
-		return rc;
-
-	return rc;
+	return 0;
 }
 
 static int get_driver_buffer_flags(struct msm_vidc_inst *inst, u32 hfi_flags)
 {
 	u32 driver_flags = 0;
 
-	if (inst->hfi_frame_info.picture_type & HFI_PICTURE_IDR)
+	if (inst->hfi_frame_info.picture_type & HFI_PICTURE_IDR) {
 		driver_flags |= MSM_VIDC_BUF_FLAG_KEYFRAME;
-	else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_P)
+	} else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_P) {
 		driver_flags |= MSM_VIDC_BUF_FLAG_PFRAME;
-	else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_B)
+	} else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_B) {
 		driver_flags |= MSM_VIDC_BUF_FLAG_BFRAME;
-	else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_I)
+	} else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_I) {
+		if (inst->codec == MSM_VIDC_VP9)
+			driver_flags |= MSM_VIDC_BUF_FLAG_KEYFRAME;
+	} else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_CRA) {
 		driver_flags |= MSM_VIDC_BUF_FLAG_KEYFRAME;
-	else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_CRA)
+	} else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_BLA) {
 		driver_flags |= MSM_VIDC_BUF_FLAG_KEYFRAME;
-	else if (inst->hfi_frame_info.picture_type & HFI_PICTURE_BLA)
-		driver_flags |= MSM_VIDC_BUF_FLAG_KEYFRAME;
+	}
 
 	if (inst->hfi_frame_info.data_corrupt)
 		driver_flags |= MSM_VIDC_BUF_FLAG_ERROR;
@@ -544,40 +594,35 @@ static int get_driver_buffer_flags(struct msm_vidc_inst *inst, u32 hfi_flags)
 		driver_flags |= MSM_VIDC_BUF_FLAG_ERROR;
 
 	if (inst->hfi_frame_info.no_output) {
-		if (inst->capabilities[META_BUF_TAG].value &&
+		if (inst->capabilities->cap[META_BUF_TAG].value &&
 			!(hfi_flags & HFI_BUF_FW_FLAG_CODEC_CONFIG))
 			driver_flags |= MSM_VIDC_BUF_FLAG_ERROR;
 	}
 
 	if (inst->hfi_frame_info.subframe_input)
-		if (inst->capabilities[META_BUF_TAG].value)
+		if (inst->capabilities->cap[META_BUF_TAG].value)
 			driver_flags |= MSM_VIDC_BUF_FLAG_ERROR;
 
 	if (hfi_flags & HFI_BUF_FW_FLAG_CODEC_CONFIG)
 		driver_flags |= MSM_VIDC_BUF_FLAG_CODECCONFIG;
 
-	if (hfi_flags & HFI_BUF_FW_FLAG_LAST ||
-	    hfi_flags & HFI_BUF_FW_FLAG_PSC_LAST)
+	if (hfi_flags & HFI_BUF_FW_FLAG_LAST)
 		driver_flags |= MSM_VIDC_BUF_FLAG_LAST;
-
-	/*
-	 * if last flag event is enabled then remove BUF_FLAG_LAST
-	 * because last flag information will be sent via V4L2_EVENT_EOS
-	 */
-	if (inst->capabilities[LAST_FLAG_EVENT_ENABLE].value)
-		driver_flags &= ~MSM_VIDC_BUF_FLAG_LAST;
 
 	return driver_flags;
 }
 
 static int handle_read_only_buffer(struct msm_vidc_inst *inst,
-				   struct msm_vidc_buffer *buf)
+	struct msm_vidc_buffer *buf)
 {
 	struct msm_vidc_buffer *ro_buf;
-	struct msm_vidc_core *core;
+	struct msm_vidc_buffers *ro_buffers;
 	bool found = false;
 
-	core = inst->core;
+	if (!inst || !buf) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
 
 	if (!is_decode_session(inst) || !is_output_buffer(buf->type))
 		return 0;
@@ -585,7 +630,11 @@ static int handle_read_only_buffer(struct msm_vidc_inst *inst,
 	if (!(buf->attr & MSM_VIDC_ATTR_READ_ONLY))
 		return 0;
 
-	list_for_each_entry(ro_buf, &inst->buffers.read_only.list, list) {
+	ro_buffers = msm_vidc_get_buffers(inst, MSM_VIDC_BUF_READ_ONLY, __func__);
+	if (!ro_buffers)
+		return -EINVAL;
+
+	list_for_each_entry(ro_buf, &ro_buffers->list, list) {
 		if (ro_buf->device_addr == buf->device_addr) {
 			found = true;
 			break;
@@ -596,25 +645,15 @@ static int handle_read_only_buffer(struct msm_vidc_inst *inst,
 	 *          if present, do nothing
 	 */
 	if (!found) {
-		ro_buf = msm_vidc_pool_alloc(inst, MSM_MEM_POOL_BUFFER);
+		ro_buf = msm_memory_alloc(inst, MSM_MEM_POOL_BUFFER);
 		if (!ro_buf) {
 			i_vpr_e(inst, "%s: buffer alloc failed\n", __func__);
 			return -ENOMEM;
 		}
-		ro_buf->index = -1;
-		ro_buf->inst = inst;
-		ro_buf->type = buf->type;
-		ro_buf->fd = buf->fd;
-		ro_buf->dmabuf = buf->dmabuf;
-		ro_buf->device_addr = buf->device_addr;
-		ro_buf->data_offset = buf->data_offset;
-		ro_buf->dbuf_get = buf->dbuf_get;
-		buf->dbuf_get = 0;
+		memcpy(ro_buf, buf, sizeof(struct msm_vidc_buffer));
 		INIT_LIST_HEAD(&ro_buf->list);
-		list_add_tail(&ro_buf->list, &inst->buffers.read_only.list);
+		list_add_tail(&ro_buf->list, &ro_buffers->list);
 		print_vidc_buffer(VIDC_LOW, "low ", "ro buf added", inst, ro_buf);
-	} else {
-		print_vidc_buffer(VIDC_LOW, "low ", "ro buf found", inst, ro_buf);
 	}
 	ro_buf->attr |= MSM_VIDC_ATTR_READ_ONLY;
 
@@ -622,9 +661,16 @@ static int handle_read_only_buffer(struct msm_vidc_inst *inst,
 }
 
 static int handle_non_read_only_buffer(struct msm_vidc_inst *inst,
-				       struct hfi_buffer *buffer)
+	struct hfi_buffer *buffer)
 {
 	struct msm_vidc_buffer *ro_buf;
+	struct msm_vidc_buffers *ro_buffers;
+	bool found = false;
+
+	if (!inst || !buffer) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
 
 	if (!is_decode_session(inst) || buffer->type != HFI_BUFFER_RAW)
 		return 0;
@@ -632,54 +678,32 @@ static int handle_non_read_only_buffer(struct msm_vidc_inst *inst,
 	if (buffer->flags & HFI_BUF_FW_FLAG_READONLY)
 		return 0;
 
-	list_for_each_entry(ro_buf, &inst->buffers.read_only.list, list) {
+	ro_buffers = msm_vidc_get_buffers(inst, MSM_VIDC_BUF_READ_ONLY, __func__);
+	if (!ro_buffers)
+		return -EINVAL;
+
+	list_for_each_entry(ro_buf, &ro_buffers->list, list) {
 		if (ro_buf->device_addr == buffer->base_address) {
-			ro_buf->attr &= ~MSM_VIDC_ATTR_READ_ONLY;
+			found = true;
 			break;
 		}
+	}
+
+	/*
+	 * Without RO flag: remove buffer from read_only list if present
+	 *          if not present, do not error out
+	 */
+	if (found) {
+		print_vidc_buffer(VIDC_LOW, "low ", "ro buf deleted", inst, ro_buf);
+		list_del(&ro_buf->list);
+		msm_memory_free(inst, ro_buf);
 	}
 
 	return 0;
 }
 
-static int handle_psc_last_flag_buffer(struct msm_vidc_inst *inst,
-				       struct hfi_buffer *buffer)
-{
-	int rc = 0;
-
-	if (!(buffer->flags & HFI_BUF_FW_FLAG_PSC_LAST))
-		return 0;
-
-	if (!msm_vidc_allow_psc_last_flag(inst))
-		return -EINVAL;
-
-	rc = msm_vidc_process_psc_last_flag(inst);
-	if (rc)
-		return rc;
-
-	return rc;
-}
-
-static int handle_drain_last_flag_buffer(struct msm_vidc_inst *inst,
-					 struct hfi_buffer *buffer)
-{
-	int rc = 0;
-
-	if (!(buffer->flags & HFI_BUF_FW_FLAG_LAST))
-		return 0;
-
-	if (!msm_vidc_allow_drain_last_flag(inst))
-		return -EINVAL;
-
-	rc = msm_vidc_process_drain_last_flag(inst);
-	if (rc)
-		return rc;
-
-	return rc;
-}
-
 static int handle_input_buffer(struct msm_vidc_inst *inst,
-			       struct hfi_buffer *buffer)
+	struct hfi_buffer *buffer)
 {
 	int rc = 0;
 	struct msm_vidc_buffers *buffers;
@@ -688,6 +712,10 @@ static int handle_input_buffer(struct msm_vidc_inst *inst,
 	u32 frame_size, batch_size;
 	bool found;
 
+	if (!inst || !buffer || !inst->capabilities || !inst->core) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
 	core = inst->core;
 	buffers = msm_vidc_get_buffers(inst, MSM_VIDC_BUF_INPUT, __func__);
 	if (!buffers)
@@ -710,7 +738,7 @@ static int handle_input_buffer(struct msm_vidc_inst *inst,
 	/* attach dequeued flag for, only last frame in the batch */
 	if (msm_vidc_is_super_buffer(inst)) {
 		frame_size = call_session_op(core, buffer_size, inst, MSM_VIDC_BUF_INPUT);
-		batch_size = inst->capabilities[SUPER_FRAME].value;
+		batch_size = inst->capabilities->cap[SUPER_FRAME].value;
 		if (!frame_size || !batch_size) {
 			i_vpr_e(inst, "%s: invalid size: frame %u, batch %u\n",
 				__func__, frame_size, batch_size);
@@ -719,8 +747,6 @@ static int handle_input_buffer(struct msm_vidc_inst *inst,
 		if (buffer->addr_offset / frame_size < batch_size - 1) {
 			i_vpr_l(inst, "%s: superframe last buffer not reached: %u, %u, %u\n",
 				__func__, buffer->addr_offset, frame_size, batch_size);
-			/* remove buffer stats for all the subframes in a superframe */
-			msm_vidc_remove_buffer_stats(inst, buf, buffer->timestamp);
 			return 0;
 		}
 	}
@@ -728,19 +754,6 @@ static int handle_input_buffer(struct msm_vidc_inst *inst,
 	if (!(buf->attr & MSM_VIDC_ATTR_QUEUED)) {
 		print_vidc_buffer(VIDC_ERR, "err ", "not queued", inst, buf);
 		return 0;
-	}
-
-	if (is_decode_session(inst) && inst->codec == MSM_VIDC_AV1) {
-		if (inst->hfi_frame_info.av1_tile_rows_columns) {
-			inst->power.fw_av1_tile_rows =
-				inst->hfi_frame_info.av1_tile_rows_columns >> 16;
-			inst->power.fw_av1_tile_columns =
-				inst->hfi_frame_info.av1_tile_rows_columns & 0x0000FFFF;
-		}
-
-		if (inst->hfi_frame_info.av1_non_uniform_tile_spacing)
-			i_vpr_l(inst, "%s: av1_non_uniform_tile_spacing %d\n",
-				__func__, inst->hfi_frame_info.av1_non_uniform_tile_spacing);
 	}
 
 	buf->data_size = buffer->data_size;
@@ -760,114 +773,27 @@ static int handle_input_buffer(struct msm_vidc_inst *inst,
 	print_vidc_buffer(VIDC_HIGH, "high", "dqbuf", inst, buf);
 	msm_vidc_update_stats(inst, buf, MSM_VIDC_DEBUGFS_EVENT_EBD);
 
-	/* ebd: update end timestamp and flags in stats entry */
-	msm_vidc_remove_buffer_stats(inst, buf, buffer->timestamp);
-
 	return rc;
 }
 
-static int msm_vidc_handle_fence_signal(struct msm_vidc_inst *inst,
-					struct msm_vidc_buffer *buf)
-{
-	int rc = 0;
-	bool signal_error = false;
-	struct msm_vidc_core *core = inst->core;
-
-	if (inst->capabilities[OUTBUF_FENCE_TYPE].value ==
-		MSM_VIDC_FENCE_NONE)
-		return 0;
-
-	if (is_meta_rx_inp_enabled(inst, META_OUTBUF_FENCE)) {
-		if (!inst->hfi_frame_info.fence_id) {
-			i_vpr_e(inst,
-				"%s: fence id is not received although fencing is enabled\n",
-				__func__);
-			return -EINVAL;
-		}
-	} else {
-		if (!inst->hfi_frame_info.fence_id) {
-			return 0;
-		}
-		i_vpr_e(inst,
-			"%s: fence id: %d is received although fencing is not enabled\n",
-			__func__, inst->hfi_frame_info.fence_id);
-		signal_error = true;
-		goto signal;
-	}
-
-	if (inst->capabilities[OUTBUF_FENCE_TYPE].value ==
-		MSM_VIDC_SYNX_V2_FENCE) {
-		if (inst->hfi_frame_info.fence_error)
-			signal_error = true;
-	} else if (inst->capabilities[OUTBUF_FENCE_TYPE].value ==
-		MSM_VIDC_SW_FENCE) {
-		if (!buf->data_size)
-			signal_error = true;
-
-		if (inst->hfi_frame_info.fence_error)
-			i_vpr_e(inst,
-				"%s: fence error info received for SW fence\n",
-				__func__);
-	} else {
-		i_vpr_e(inst, "%s: invalid fence type\n", __func__);
-		return -EINVAL;
-	}
-
-signal:
-	/* fence signalling */
-	if (signal_error) {
-		/* signal fence error */
-		i_vpr_l(inst,
-			"%s: signalling fence error for buf idx %d daddr %#llx\n",
-			__func__, buf->index, buf->device_addr);
-		call_fence_op(core, fence_destroy, inst,
-			      inst->hfi_frame_info.fence_id);
-	} else {
-		/* signal fence success*/
-		rc = call_fence_op(core, fence_signal, inst,
-				   inst->hfi_frame_info.fence_id);
-		if (rc) {
-			i_vpr_e(inst, "%s: failed to signal fence\n", __func__);
-			return -EINVAL;
-		}
-	}
-
-	return 0;
-}
-
 static int handle_output_buffer(struct msm_vidc_inst *inst,
-				struct hfi_buffer *buffer)
+	struct hfi_buffer *buffer)
 {
 	int rc = 0;
 	struct msm_vidc_buffers *buffers;
 	struct msm_vidc_buffer *buf;
-	struct msm_vidc_core *core;
 	bool found, fatal = false;
 
-	core = inst->core;
-
-	/* handle drain last flag buffer */
-	if (buffer->flags & HFI_BUF_FW_FLAG_LAST) {
-		rc = handle_drain_last_flag_buffer(inst, buffer);
-		if (rc)
-			msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+	if (!inst || !inst->capabilities) {
+		d_vpr_e("%s: Invalid params\n", __func__);
+		return -EINVAL;
 	}
 
 	if (is_decode_session(inst)) {
-		/* handle release response for decoder output buffer */
-		if (buffer->flags & HFI_BUF_FW_FLAG_RELEASE_DONE)
-			return handle_release_output_buffer(inst, buffer);
-		/* handle psc last flag buffer */
-		if (buffer->flags & HFI_BUF_FW_FLAG_PSC_LAST) {
-			rc = handle_psc_last_flag_buffer(inst, buffer);
-			if (rc)
-				msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
-		}
-		/* handle non-read only buffer */
 		if (!(buffer->flags & HFI_BUF_FW_FLAG_READONLY)) {
 			rc = handle_non_read_only_buffer(inst, buffer);
 			if (rc)
-				msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+				msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 		}
 	}
 
@@ -877,11 +803,8 @@ static int handle_output_buffer(struct msm_vidc_inst *inst,
 
 	found = false;
 	list_for_each_entry(buf, &buffers->list, list) {
-		if (!(buf->attr & MSM_VIDC_ATTR_QUEUED))
-			continue;
 		if (is_decode_session(inst))
-			found = (buf->index == buffer->index &&
-				buf->device_addr == buffer->base_address &&
+			found = (buf->device_addr == buffer->base_address &&
 				buf->data_offset == buffer->data_offset);
 		else
 			found = (buf->index == buffer->index);
@@ -889,9 +812,11 @@ static int handle_output_buffer(struct msm_vidc_inst *inst,
 		if (found)
 			break;
 	}
-	if (!found) {
-		i_vpr_l(inst, "%s: invalid idx %d daddr %#llx\n",
-			__func__, buffer->index, buffer->base_address);
+	if (!found)
+		return 0;
+
+	if (!(buf->attr & MSM_VIDC_ATTR_QUEUED)) {
+		print_vidc_buffer(VIDC_ERR, "err ", "not queued", inst, buf);
 		return 0;
 	}
 
@@ -924,15 +849,14 @@ static int handle_output_buffer(struct msm_vidc_inst *inst,
 			}
 		}
 		if (fatal)
-			msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+			msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 	}
 
 	/*
 	 * reset data size to zero for last flag buffer.
 	 * reset RO flag for last flag buffer.
 	 */
-	if ((buffer->flags & HFI_BUF_FW_FLAG_LAST) ||
-		(buffer->flags & HFI_BUF_FW_FLAG_PSC_LAST)) {
+	if (buffer->flags & HFI_BUF_FW_FLAG_LAST) {
 		if (buffer->data_size) {
 			i_vpr_e(inst, "%s: reset data size to zero for last flag buffer\n",
 				__func__);
@@ -943,36 +867,48 @@ static int handle_output_buffer(struct msm_vidc_inst *inst,
 				__func__);
 			buffer->flags &= ~HFI_BUF_FW_FLAG_READONLY;
 		}
+		if (!msm_vidc_allow_last_flag(inst)) {
+			inst->psc_or_last_flag_discarded = true;
+			i_vpr_e(inst, "%s: reset last flag for last flag buffer\n",
+				__func__);
+			buffer->flags &= ~HFI_BUF_FW_FLAG_LAST;
+		}
 	}
 
 	if (is_decode_session(inst)) {
-		/* RO flag is not expected when internal dpb buffers are allocated */
-		if (inst->buffers.dpb.size && buffer->flags & HFI_BUF_FW_FLAG_READONLY) {
-			print_vidc_buffer(VIDC_ERR, "err ", "unexpected RO flag", inst, buf);
-			msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+		/* RO flag is not expected for linear colorformat */
+		if (is_linear_colorformat(inst->capabilities->cap[PIX_FMTS].value) &&
+			(buffer->flags & HFI_BUF_FW_FLAG_READONLY)) {
+			buffer->flags &= ~HFI_BUF_FW_FLAG_READONLY;
+			print_vidc_buffer(
+				VIDC_HIGH, "high", "RO flag in linear colorformat", inst, buf);
 		}
 
 		if (buffer->flags & HFI_BUF_FW_FLAG_READONLY) {
 			buf->attr |= MSM_VIDC_ATTR_READ_ONLY;
 			rc = handle_read_only_buffer(inst, buf);
 			if (rc)
-				msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+				msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 		} else {
 			buf->attr &= ~MSM_VIDC_ATTR_READ_ONLY;
-		}
-
-		if (buf->dbuf_get) {
-			call_mem_op(core, dma_buf_put, inst, buf->dmabuf);
-			buf->dbuf_get = 0;
 		}
 	}
 
 	buf->flags = 0;
 	buf->flags = get_driver_buffer_flags(inst, buffer->flags);
 
-	rc = msm_vidc_handle_fence_signal(inst, buf);
-	if (rc)
-		msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+	/* fence signalling */
+	if (inst->hfi_frame_info.fence_id) {
+		if (buf->data_size) {
+			/* signal fence */
+			msm_vidc_fence_signal(inst,
+				inst->hfi_frame_info.fence_id);
+		} else {
+			/* destroy fence */
+			msm_vidc_fence_destroy(inst,
+				inst->hfi_frame_info.fence_id);
+		}
+	}
 
 	if (is_decode_session(inst)) {
 		inst->power.fw_cr = inst->hfi_frame_info.cr;
@@ -982,7 +918,7 @@ static int handle_output_buffer(struct msm_vidc_inst *inst,
 	}
 
 	if (!is_image_session(inst) && is_decode_session(inst) && buf->data_size)
-		msm_vidc_update_timestamp_rate(inst, buf->timestamp);
+		msm_vidc_update_timestamp(inst, buf->timestamp);
 
 	/* update output buffer timestamp, if ts_reorder is enabled */
 	if (is_ts_reorder_allowed(inst) && buf->data_size)
@@ -991,14 +927,11 @@ static int handle_output_buffer(struct msm_vidc_inst *inst,
 	print_vidc_buffer(VIDC_HIGH, "high", "dqbuf", inst, buf);
 	msm_vidc_update_stats(inst, buf, MSM_VIDC_DEBUGFS_EVENT_FBD);
 
-	/* fbd: print stats and remove entry */
-	msm_vidc_remove_buffer_stats(inst, buf, buffer->timestamp);
-
 	return rc;
 }
 
 static int handle_input_metadata_buffer(struct msm_vidc_inst *inst,
-					struct hfi_buffer *buffer)
+	struct hfi_buffer *buffer)
 {
 	int rc = 0;
 	struct msm_vidc_buffers *buffers;
@@ -1007,6 +940,10 @@ static int handle_input_metadata_buffer(struct msm_vidc_inst *inst,
 	u32 frame_size, batch_size;
 	bool found;
 
+	if (!inst || !buffer || !inst->capabilities || !inst->core) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
 	core = inst->core;
 	buffers = msm_vidc_get_buffers(inst, MSM_VIDC_BUF_INPUT_META, __func__);
 	if (!buffers)
@@ -1028,7 +965,7 @@ static int handle_input_metadata_buffer(struct msm_vidc_inst *inst,
 	/* attach dequeued flag for, only last frame in the batch */
 	if (msm_vidc_is_super_buffer(inst)) {
 		frame_size = call_session_op(core, buffer_size, inst, MSM_VIDC_BUF_INPUT_META);
-		batch_size = inst->capabilities[SUPER_FRAME].value;
+		batch_size = inst->capabilities->cap[SUPER_FRAME].value;
 		if (!frame_size || !batch_size) {
 			i_vpr_e(inst, "%s: invalid size: frame %u, batch %u\n",
 				__func__, frame_size, batch_size);
@@ -1050,23 +987,15 @@ static int handle_input_metadata_buffer(struct msm_vidc_inst *inst,
 	buf->attr &= ~MSM_VIDC_ATTR_QUEUED;
 	buf->attr |= MSM_VIDC_ATTR_DEQUEUED;
 	buf->flags = 0;
-	if (buffer->flags & HFI_BUF_FW_FLAG_LAST ||
-	    buffer->flags & HFI_BUF_FW_FLAG_PSC_LAST)
+	if (buffer->flags & HFI_BUF_FW_FLAG_LAST)
 		buf->flags |= MSM_VIDC_BUF_FLAG_LAST;
-
-	/*
-	 * if last flag event is enabled then remove BUF_FLAG_LAST
-	 * because last flag information will be sent via V4L2_EVENT_EOS
-	 */
-	if (inst->capabilities[LAST_FLAG_EVENT_ENABLE].value)
-		buf->flags &= ~MSM_VIDC_BUF_FLAG_LAST;
 
 	print_vidc_buffer(VIDC_LOW, "low ", "dqbuf", inst, buf);
 	return rc;
 }
 
 static int handle_output_metadata_buffer(struct msm_vidc_inst *inst,
-					 struct hfi_buffer *buffer)
+	struct hfi_buffer *buffer)
 {
 	int rc = 0;
 	struct msm_vidc_buffers *buffers;
@@ -1100,83 +1029,18 @@ static int handle_output_metadata_buffer(struct msm_vidc_inst *inst,
 	buf->attr &= ~MSM_VIDC_ATTR_QUEUED;
 	buf->attr |= MSM_VIDC_ATTR_DEQUEUED;
 	buf->flags = 0;
-	if (buffer->flags & HFI_BUF_FW_FLAG_LAST ||
-	    buffer->flags & HFI_BUF_FW_FLAG_PSC_LAST)
+	if (buffer->flags & HFI_BUF_FW_FLAG_LAST) {
+		if (!msm_vidc_allow_last_flag(inst)) {
+			inst->psc_or_last_flag_discarded = true;
+			i_vpr_e(inst, "%s: reset last flag for last flag metadata buffer\n",
+				__func__);
+			buffer->flags &= ~HFI_BUF_FW_FLAG_LAST;
+		}
+	}
+	if (buffer->flags & HFI_BUF_FW_FLAG_LAST)
 		buf->flags |= MSM_VIDC_BUF_FLAG_LAST;
 
-	/*
-	 * if last flag event is enabled then remove BUF_FLAG_LAST
-	 * because last flag information will be sent via V4L2_EVENT_EOS
-	 */
-	if (inst->capabilities[LAST_FLAG_EVENT_ENABLE].value)
-		buf->flags &= ~MSM_VIDC_BUF_FLAG_LAST;
-
 	print_vidc_buffer(VIDC_LOW, "low ", "dqbuf", inst, buf);
-	return rc;
-}
-
-static bool is_metabuffer_dequeued(struct msm_vidc_inst *inst,
-				   struct msm_vidc_buffer *buf)
-{
-	bool found = false;
-	struct msm_vidc_buffers *buffers;
-	struct msm_vidc_buffer *buffer;
-	enum msm_vidc_buffer_type buffer_type;
-
-	if (is_input_buffer(buf->type) && is_input_meta_enabled(inst))
-		buffer_type = MSM_VIDC_BUF_INPUT_META;
-	else if (is_output_buffer(buf->type) && is_output_meta_enabled(inst))
-		buffer_type = MSM_VIDC_BUF_OUTPUT_META;
-	else
-		return true;
-
-	buffers = msm_vidc_get_buffers(inst, buffer_type, __func__);
-	if (!buffers)
-		return false;
-
-	list_for_each_entry(buffer, &buffers->list, list) {
-		if (buffer->index == buf->index &&
-			(buffer->attr & MSM_VIDC_ATTR_DEQUEUED ||
-			buffer->attr & MSM_VIDC_ATTR_BUFFER_DONE)) {
-			/*
-			 * For META_OUTBUF_FENCE case, meta buffers are
-			 * dequeued ahead in time and completed vb2 done
-			 * as well. Hence, check for vb2 buffer done flag since
-			 * dequeued flag is already cleared for such buffers
-			 */
-			found = true;
-			break;
-		}
-	}
-	return found;
-}
-
-static int msm_vidc_check_meta_buffers(struct msm_vidc_inst *inst)
-{
-	int rc = 0;
-	int i;
-	struct msm_vidc_buffers *buffers;
-	struct msm_vidc_buffer *buf;
-	static const enum msm_vidc_buffer_type buffer_type[] = {
-		MSM_VIDC_BUF_INPUT,
-		MSM_VIDC_BUF_OUTPUT,
-	};
-
-	for (i = 0; i < ARRAY_SIZE(buffer_type); i++) {
-		buffers = msm_vidc_get_buffers(inst, buffer_type[i], __func__);
-		if (!buffers)
-			return -EINVAL;
-
-		list_for_each_entry(buf, &buffers->list, list) {
-			if (buf->attr & MSM_VIDC_ATTR_DEQUEUED) {
-				if (!is_metabuffer_dequeued(inst, buf)) {
-					print_vidc_buffer(VIDC_ERR, "err ",
-						"meta not dequeued", inst, buf);
-					return -EINVAL;
-				}
-			}
-		}
-	}
 	return rc;
 }
 
@@ -1193,11 +1057,6 @@ static int handle_dequeue_buffers(struct msm_vidc_inst *inst)
 		MSM_VIDC_BUF_OUTPUT_META,
 		MSM_VIDC_BUF_OUTPUT,
 	};
-
-	/* check metabuffers dequeued before sending vb2_buffer_done() */
-	rc = msm_vidc_check_meta_buffers(inst);
-	if (rc)
-		return rc;
 
 	for (i = 0; i < ARRAY_SIZE(buffer_type); i++) {
 		buffers = msm_vidc_get_buffers(inst, buffer_type[i], __func__);
@@ -1216,14 +1075,13 @@ static int handle_dequeue_buffers(struct msm_vidc_inst *inst)
 						"vb2 done already", inst, buf);
 				} else {
 					buf->attr |= MSM_VIDC_ATTR_BUFFER_DONE;
-					rc = msm_vidc_vb2_buffer_done(inst, buf);
-					if (rc) {
-						print_vidc_buffer(VIDC_HIGH, "err ",
-							"vb2 done failed", inst, buf);
-						/* ignore the error */
-						rc = 0;
-					}
+					rc = msm_vidc_dqbuf_cache_operation(inst, buf);
+					if (rc)
+						return rc;
+
+					msm_vidc_vb2_buffer_done(inst, buf);
 				}
+				msm_vidc_put_driver_buf(inst, buf);
 			}
 		}
 	}
@@ -1232,22 +1090,49 @@ static int handle_dequeue_buffers(struct msm_vidc_inst *inst)
 }
 
 static int handle_release_internal_buffer(struct msm_vidc_inst *inst,
-					  struct hfi_buffer *buffer)
+	struct hfi_buffer *buffer)
 {
 	int rc = 0;
 	struct msm_vidc_buffers *buffers;
 	struct msm_vidc_buffer *buf;
 	bool found;
 
-	buffers = msm_vidc_get_buffers(inst,
-				       hfi_buf_type_to_driver(inst->domain,
-							      buffer->type, HFI_PORT_NONE),
-				       __func__);
+	buffers = msm_vidc_get_buffers(inst, hfi_buf_type_to_driver(inst->domain,
+		buffer->type, HFI_PORT_NONE), __func__);
 	if (!buffers)
 		return -EINVAL;
 
 	found = false;
 	list_for_each_entry(buf, &buffers->list, list) {
+		if (buf->device_addr == buffer->base_address) {
+			found = true;
+			break;
+		}
+	}
+
+	if (!is_internal_buffer(buf->type))
+		return 0;
+
+	if (found) {
+		rc = msm_vidc_destroy_internal_buffer(inst, buf);
+		if (rc)
+			return rc;
+	} else {
+		i_vpr_e(inst, "%s: invalid idx %d daddr %#llx\n",
+			__func__, buffer->index, buffer->base_address);
+		return -EINVAL;
+	}
+	return rc;
+}
+
+static int handle_release_output_buffer(struct msm_vidc_inst *inst,
+	struct hfi_buffer *buffer, enum hfi_packet_port_type port_type)
+{
+	int rc = 0;
+	struct msm_vidc_buffer *buf;
+	bool found = false;
+
+	list_for_each_entry(buf, &inst->buffers.release.list, list) {
 		if (buf->device_addr == buffer->base_address) {
 			found = true;
 			break;
@@ -1259,55 +1144,15 @@ static int handle_release_internal_buffer(struct msm_vidc_inst *inst,
 		return -EINVAL;
 	}
 
-	if (!is_internal_buffer(buf->type))
-		return 0;
-
-	/* remove QUEUED attribute */
-	buf->attr &= ~MSM_VIDC_ATTR_QUEUED;
-
-	/*
-	 * firmware will return/release internal buffer in two cases
-	 * - driver sent release cmd in which case driver should destroy the buffer
-	 * - as part stop cmd in which case driver can reuse the buffer, so skip
-	 *   destroying the buffer
-	 */
-	if (buf->attr & MSM_VIDC_ATTR_PENDING_RELEASE) {
-		rc = msm_vidc_destroy_internal_buffer(inst, buf);
-		if (rc)
-			return rc;
-	}
-	return rc;
-}
-
-int handle_release_output_buffer(struct msm_vidc_inst *inst,
-				 struct hfi_buffer *buffer)
-{
-	int rc = 0;
-	struct msm_vidc_buffer *buf;
-	bool found = false;
-
-	list_for_each_entry(buf, &inst->buffers.read_only.list, list) {
-		if (buf->device_addr == buffer->base_address &&
-			buf->attr & MSM_VIDC_ATTR_PENDING_RELEASE) {
-			found = true;
-			break;
-		}
-	}
-	if (!found) {
-		i_vpr_e(inst, "%s: invalid idx %d daddr %#llx\n",
-			__func__, buffer->index, buffer->base_address);
-		return -EINVAL;
-	}
-
-	buf->attr &= ~MSM_VIDC_ATTR_READ_ONLY;
-	buf->attr &= ~MSM_VIDC_ATTR_PENDING_RELEASE;
-	print_vidc_buffer(VIDC_LOW, "low ", "release done", inst, buf);
+	rc = msm_vdec_handle_release_buffer(inst, buf);
+	if (rc)
+		return rc;
 
 	return rc;
 }
 
 static int handle_session_buffer(struct msm_vidc_inst *inst,
-				 struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	int i, rc = 0;
 	struct hfi_buffer *buffer;
@@ -1336,7 +1181,6 @@ static int handle_session_buffer(struct msm_vidc_inst *inst,
 		{HFI_BUFFER_NON_COMV,       handle_release_internal_buffer    },
 		{HFI_BUFFER_LINE,           handle_release_internal_buffer    },
 		{HFI_BUFFER_PERSIST,        handle_release_internal_buffer    },
-		{HFI_BUFFER_PARTIAL_DATA,   handle_release_internal_buffer    },
 	};
 	static const struct msm_vidc_hfi_buffer_handle dec_output_hfi_handle[] = {
 		{HFI_BUFFER_METADATA,       handle_output_metadata_buffer     },
@@ -1351,20 +1195,23 @@ static int handle_session_buffer(struct msm_vidc_inst *inst,
 	}
 
 	if (!check_for_packet_payload(inst, pkt, __func__)) {
-		msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+		msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 		return 0;
 	}
 
 	buffer = (struct hfi_buffer *)((u8 *)pkt + sizeof(struct hfi_packet));
 	if (!is_valid_hfi_buffer_type(inst, buffer->type, __func__)) {
-		msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+		msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 		return 0;
 	}
 
 	if (!is_valid_hfi_port(inst, pkt->port, buffer->type, __func__)) {
-		msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+		msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 		return 0;
 	}
+	if (is_decode_session(inst) && buffer->type == HFI_BUFFER_RAW &&
+		buffer->flags & HFI_BUF_FW_FLAG_RELEASE_DONE)
+		return handle_release_output_buffer(inst, buffer, pkt->port);
 
 	if (is_encode_session(inst)) {
 		if (pkt->port == HFI_PORT_RAW) {
@@ -1410,41 +1257,8 @@ static int handle_session_buffer(struct msm_vidc_inst *inst,
 	return rc;
 }
 
-static int handle_input_port_settings_change(struct msm_vidc_inst *inst)
-{
-	int rc = 0;
-	enum msm_vidc_allow allow = MSM_VIDC_DISALLOW;
-
-	allow = msm_vidc_allow_input_psc(inst);
-	if (allow == MSM_VIDC_DISALLOW) {
-		return -EINVAL;
-	} else if (allow == MSM_VIDC_ALLOW) {
-		rc = msm_vidc_state_change_input_psc(inst);
-		if (rc)
-			return rc;
-		print_psc_properties("INPUT_PSC", inst, inst->subcr_params[INPUT_PORT]);
-		rc = msm_vdec_input_port_settings_change(inst);
-		if (rc)
-			return rc;
-	}
-
-	return rc;
-}
-
-static int handle_output_port_settings_change(struct msm_vidc_inst *inst)
-{
-	int rc = 0;
-
-	print_psc_properties("OUTPUT_PSC", inst, inst->subcr_params[OUTPUT_PORT]);
-	rc = msm_vdec_output_port_settings_change(inst);
-	if (rc)
-		return rc;
-
-	return rc;
-}
-
 static int handle_port_settings_change(struct msm_vidc_inst *inst,
-				       struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	int rc = 0;
 
@@ -1452,28 +1266,22 @@ static int handle_port_settings_change(struct msm_vidc_inst *inst,
 		__func__, pkt->port);
 
 	if (pkt->port == HFI_PORT_RAW) {
-		rc = handle_output_port_settings_change(inst);
-		if (rc)
-			goto exit;
+		print_psc_properties("OUTPUT_PSC", inst, inst->subcr_params[OUTPUT_PORT]);
+		rc = msm_vdec_output_port_settings_change(inst);
 	} else if (pkt->port == HFI_PORT_BITSTREAM) {
-		rc = handle_input_port_settings_change(inst);
-		if (rc)
-			goto exit;
+		print_psc_properties("INPUT_PSC", inst, inst->subcr_params[INPUT_PORT]);
+		rc = msm_vdec_input_port_settings_change(inst);
 	} else {
 		i_vpr_e(inst, "%s: invalid port type: %#x\n",
 			__func__, pkt->port);
 		rc = -EINVAL;
-		goto exit;
 	}
 
-exit:
-	if (rc)
-		msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
 	return rc;
 }
 
 static int handle_session_subscribe_mode(struct msm_vidc_inst *inst,
-					 struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	if (pkt->flags & HFI_FW_FLAGS_SUCCESS)
 		i_vpr_h(inst, "%s: successful\n", __func__);
@@ -1481,15 +1289,7 @@ static int handle_session_subscribe_mode(struct msm_vidc_inst *inst,
 }
 
 static int handle_session_delivery_mode(struct msm_vidc_inst *inst,
-					struct hfi_packet *pkt)
-{
-	if (pkt->flags & HFI_FW_FLAGS_SUCCESS)
-		i_vpr_h(inst, "%s: successful\n", __func__);
-	return 0;
-}
-
-static int handle_session_pause(struct msm_vidc_inst *inst,
-				struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	if (pkt->flags & HFI_FW_FLAGS_SUCCESS)
 		i_vpr_h(inst, "%s: successful\n", __func__);
@@ -1497,7 +1297,7 @@ static int handle_session_pause(struct msm_vidc_inst *inst,
 }
 
 static int handle_session_resume(struct msm_vidc_inst *inst,
-				 struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	if (pkt->flags & HFI_FW_FLAGS_SUCCESS)
 		i_vpr_h(inst, "%s: successful\n", __func__);
@@ -1505,7 +1305,7 @@ static int handle_session_resume(struct msm_vidc_inst *inst,
 }
 
 static int handle_session_stability(struct msm_vidc_inst *inst,
-				    struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	if (pkt->flags & HFI_FW_FLAGS_SUCCESS)
 		i_vpr_h(inst, "%s: successful\n", __func__);
@@ -1513,7 +1313,7 @@ static int handle_session_stability(struct msm_vidc_inst *inst,
 }
 
 static int handle_session_command(struct msm_vidc_inst *inst,
-				  struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	int i, rc;
 	static const struct msm_vidc_hfi_packet_handle hfi_pkt_handle[] = {
@@ -1526,7 +1326,6 @@ static int handle_session_command(struct msm_vidc_inst *inst,
 		{HFI_CMD_SETTINGS_CHANGE,   handle_port_settings_change       },
 		{HFI_CMD_SUBSCRIBE_MODE,    handle_session_subscribe_mode     },
 		{HFI_CMD_DELIVERY_MODE,     handle_session_delivery_mode      },
-		{HFI_CMD_PAUSE,             handle_session_pause              },
 		{HFI_CMD_RESUME,            handle_session_resume             },
 		{HFI_CMD_STABILITY,         handle_session_stability          },
 	};
@@ -1551,20 +1350,11 @@ static int handle_session_command(struct msm_vidc_inst *inst,
 }
 
 static int handle_dpb_list_property(struct msm_vidc_inst *inst,
-				    struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	u32 payload_size, num_words_in_payload;
 	u8 *payload_start;
 	int i = 0;
-	struct msm_vidc_buffer *ro_buf;
-	bool found = false;
-	u64 device_addr;
-
-	if (!is_decode_session(inst)) {
-		i_vpr_e(inst,
-			"%s: unsupported for non-decode session\n", __func__);
-		return -EINVAL;
-	}
 
 	payload_size = pkt->size - sizeof(struct hfi_packet);
 	num_words_in_payload = payload_size / 4;
@@ -1575,17 +1365,11 @@ static int handle_dpb_list_property(struct msm_vidc_inst *inst,
 		i_vpr_e(inst,
 			"%s: dpb list payload size %d exceeds expected max size %d\n",
 			__func__, payload_size, MAX_DPB_LIST_PAYLOAD_SIZE);
-		msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+		msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 		return -EINVAL;
 	}
 	memcpy(inst->dpb_list_payload, payload_start, payload_size);
 
-	/*
-	 * dpb_list_payload details:
-	 * payload[0-1]           : 64 bits base_address of DPB-1
-	 * payload[2]             : 32 bits addr_offset  of DPB-1
-	 * payload[3]             : 32 bits data_offset  of DPB-1
-	 */
 	for (i = 0; (i + 3) < num_words_in_payload; i = i + 4) {
 		i_vpr_l(inst,
 			"%s: base addr %#x %#x, addr offset %#x, data offset %#x\n",
@@ -1593,46 +1377,43 @@ static int handle_dpb_list_property(struct msm_vidc_inst *inst,
 			inst->dpb_list_payload[i + 2], inst->dpb_list_payload[i + 3]);
 	}
 
-	list_for_each_entry(ro_buf, &inst->buffers.read_only.list, list) {
-		found = false;
-		/* do not mark RELEASE_ELIGIBLE for non-read only buffers */
-		if (!(ro_buf->attr & MSM_VIDC_ATTR_READ_ONLY))
-			continue;
-		/* no need to mark RELEASE_ELIGIBLE again */
-		if (ro_buf->attr & MSM_VIDC_ATTR_RELEASE_ELIGIBLE)
-			continue;
-		/*
-		 * do not add RELEASE_ELIGIBLE to buffers for which driver
-		 * sent release cmd already
-		 */
-		if (ro_buf->attr & MSM_VIDC_ATTR_PENDING_RELEASE)
-			continue;
-		for (i = 0; (i + 3) < num_words_in_payload; i = i + 4) {
-			device_addr = *((u64 *)(&inst->dpb_list_payload[i]));
-			if (ro_buf->device_addr == device_addr) {
-				found = true;
-				break;
-			}
-		}
-		/* mark a buffer as RELEASE_ELIGIBLE if not found in dpb list */
-		if (!found)
-			ro_buf->attr |= MSM_VIDC_ATTR_RELEASE_ELIGIBLE;
-	}
-
 	return 0;
 }
 
-static int handle_property_with_payload(struct msm_vidc_inst *inst,
-					struct hfi_packet *pkt, u32 port)
+static int handle_session_property(struct msm_vidc_inst *inst,
+	struct hfi_packet *pkt)
 {
 	int rc = 0;
+	u32 port;
 	u32 *payload_ptr = NULL;
 
-	payload_ptr = (u32 *)((u8 *)pkt + sizeof(struct hfi_packet));
-	if (!payload_ptr) {
-		i_vpr_e(inst,
-			"%s: payload_ptr cannot be null\n", __func__);
+	if (!inst || !inst->capabilities) {
+		d_vpr_e("%s: Invalid params\n", __func__);
 		return -EINVAL;
+	}
+
+	i_vpr_l(inst, "%s: property type %#x\n", __func__, pkt->type);
+
+	port = vidc_port_from_hfi(inst, pkt->port);
+	if (port >= MAX_PORT) {
+		i_vpr_e(inst,
+				"%s: invalid port: %d for property %#x\n",
+				__func__, pkt->port, pkt->type);
+		return -EINVAL;
+	}
+
+	if (pkt->payload_info != HFI_PAYLOAD_NONE) {
+		if (!check_for_packet_payload(inst, pkt, __func__))
+			return 0;
+
+		payload_ptr = (u32 *)((u8 *)pkt + sizeof(struct hfi_packet));
+	}
+
+	if (pkt->flags & HFI_FW_FLAGS_INFORMATION) {
+		i_vpr_h(inst,
+			"%s: information flag received for property %#x packet\n",
+			__func__, pkt->type);
+		return 0;
 	}
 
 	switch (pkt->type) {
@@ -1667,23 +1448,20 @@ static int handle_property_with_payload(struct msm_vidc_inst *inst,
 	case HFI_PROP_TIER:
 		inst->subcr_params[port].tier = payload_ptr[0];
 		break;
-	case HFI_PROP_AV1_FILM_GRAIN_PRESENT:
-		inst->subcr_params[port].av1_film_grain_present = payload_ptr[0];
-		break;
-	case HFI_PROP_AV1_SUPER_BLOCK_ENABLED:
-		inst->subcr_params[port].av1_super_block_enabled = payload_ptr[0];
-		break;
-	case HFI_PROP_MAX_NUM_REORDER_FRAMES:
-		inst->subcr_params[port].max_num_reorder_frames = payload_ptr[0];
-		break;
 	case HFI_PROP_PICTURE_TYPE:
 		inst->hfi_frame_info.picture_type = payload_ptr[0];
 		if (inst->hfi_frame_info.picture_type & HFI_PICTURE_B)
 			inst->has_bframe = true;
-		if (inst->hfi_frame_info.picture_type & HFI_PICTURE_IDR)
-			inst->iframe = true;
-		else
-			inst->iframe = false;
+		break;
+	case HFI_PROP_NO_OUTPUT:
+		if (port != INPUT_PORT) {
+			i_vpr_e(inst,
+				"%s: invalid port: %d for property %#x\n",
+				__func__, pkt->port, pkt->type);
+			break;
+		}
+		i_vpr_h(inst, "received no_output property\n");
+		inst->hfi_frame_info.no_output = 1;
 		break;
 	case HFI_PROP_SUBFRAME_INPUT:
 		if (port != INPUT_PORT) {
@@ -1700,47 +1478,50 @@ static int handle_property_with_payload(struct msm_vidc_inst *inst,
 	case HFI_PROP_WORST_COMPLEXITY_FACTOR:
 		inst->hfi_frame_info.cf = payload_ptr[0];
 		break;
-	case HFI_PROP_AV1_TILE_ROWS_COLUMNS:
-		inst->hfi_frame_info.av1_tile_rows_columns =
-			payload_ptr[0];
-		break;
-	case HFI_PROP_AV1_UNIFORM_TILE_SPACING:
-		if (!payload_ptr[0])
-			inst->hfi_frame_info.av1_non_uniform_tile_spacing = true;
-		break;
 	case HFI_PROP_CABAC_SESSION:
 		if (payload_ptr[0] == 1)
 			msm_vidc_update_cap_value(inst, ENTROPY_MODE,
-						  V4L2_MPEG_VIDEO_H264_ENTROPY_MODE_CABAC,
-						  __func__);
+				V4L2_MPEG_VIDEO_H264_ENTROPY_MODE_CABAC,
+				__func__);
 		else
 			msm_vidc_update_cap_value(inst, ENTROPY_MODE,
-						  V4L2_MPEG_VIDEO_H264_ENTROPY_MODE_CAVLC,
-						  __func__);
+				V4L2_MPEG_VIDEO_H264_ENTROPY_MODE_CAVLC,
+				__func__);
 		break;
 	case HFI_PROP_DPB_LIST:
-		rc = handle_dpb_list_property(inst, pkt);
-		if (rc)
-			break;
+		if (is_decode_session(inst) && port == OUTPUT_PORT &&
+			inst->capabilities->cap[DPB_LIST].value) {
+			rc = handle_dpb_list_property(inst, pkt);
+			if (rc)
+				break;
+		} else {
+			i_vpr_e(inst,
+				"%s: invalid property %#x for %s port %d dpb cap value %d\n",
+				__func__, pkt->type, is_decode_session(inst) ? "decode" : "encode",
+				port, inst->capabilities->cap[DPB_LIST].value);
+		}
 		break;
 	case HFI_PROP_QUALITY_MODE:
-		if (inst->capabilities[QUALITY_MODE].value !=  payload_ptr[0])
+		if (payload_ptr &&
+			inst->capabilities->cap[QUALITY_MODE].value !=  payload_ptr[0])
 			i_vpr_e(inst,
-				"%s: fw quality mode(%d) not matching the capability value(%lld)\n",
+				"%s: fw quality mode(%d) not matching the capability value(%d)\n",
 				__func__,  payload_ptr[0],
-				inst->capabilities[QUALITY_MODE].value);
+				inst->capabilities->cap[QUALITY_MODE].value);
 		break;
 	case HFI_PROP_STAGE:
-		if (inst->capabilities[STAGE].value !=  payload_ptr[0])
+		if (payload_ptr &&
+			inst->capabilities->cap[STAGE].value !=  payload_ptr[0])
 			i_vpr_e(inst,
-				"%s: fw stage mode(%d) not matching the capability value(%lld)\n",
-				__func__,  payload_ptr[0], inst->capabilities[STAGE].value);
+				"%s: fw stage mode(%d) not matching the capability value(%d)\n",
+				__func__,  payload_ptr[0], inst->capabilities->cap[STAGE].value);
 		break;
 	case HFI_PROP_PIPE:
-		if (inst->capabilities[PIPE].value !=  payload_ptr[0])
+		if (payload_ptr &&
+			inst->capabilities->cap[PIPE].value !=  payload_ptr[0])
 			i_vpr_e(inst,
-				"%s: fw pipe mode(%d) not matching the capability value(%lld)\n",
-				__func__,  payload_ptr[0], inst->capabilities[PIPE].value);
+				"%s: fw pipe mode(%d) not matching the capability value(%d)\n",
+				__func__,  payload_ptr[0], inst->capabilities->cap[PIPE].value);
 		break;
 	case HFI_PROP_FENCE:
 		inst->hfi_frame_info.fence_id = payload_ptr[0];
@@ -1749,77 +1530,6 @@ static int handle_property_with_payload(struct msm_vidc_inst *inst,
 		i_vpr_e(inst, "%s: invalid property %#x\n",
 			__func__, pkt->type);
 		break;
-	}
-
-	return rc;
-}
-
-static int handle_property_without_payload(struct msm_vidc_inst *inst,
-					   struct hfi_packet *pkt,
-					   u32 port)
-{
-	int rc = 0;
-
-	switch (pkt->type) {
-	case HFI_PROP_DPB_LIST:
-		/*
-		 * if fw sends dpb list property without payload,
-		 * it means there are no more reference buffers.
-		 */
-		rc = handle_dpb_list_property(inst, pkt);
-		if (rc)
-			break;
-		break;
-	case HFI_PROP_NO_OUTPUT:
-		if (port != INPUT_PORT) {
-			i_vpr_e(inst,
-				"%s: invalid port: %d for property %#x\n",
-				__func__, pkt->port, pkt->type);
-			break;
-		}
-		i_vpr_h(inst, "received no_output property\n");
-		inst->hfi_frame_info.no_output = 1;
-		break;
-	default:
-		i_vpr_e(inst, "%s: invalid property %#x\n",
-			__func__, pkt->type);
-		break;
-	}
-
-	return rc;
-}
-
-static int handle_session_property(struct msm_vidc_inst *inst,
-				   struct hfi_packet *pkt)
-{
-	int rc = 0;
-	u32 port;
-
-	i_vpr_l(inst, "%s: property type %#x\n", __func__, pkt->type);
-
-	port = vidc_port_from_hfi(inst, pkt->port);
-	if (port >= MAX_PORT) {
-		i_vpr_e(inst,
-			"%s: invalid port: %d for property %#x\n",
-			__func__, pkt->port, pkt->type);
-		return -EINVAL;
-	}
-
-	if (pkt->flags & HFI_FW_FLAGS_INFORMATION) {
-		i_vpr_h(inst,
-			"%s: information flag received for property %#x packet\n",
-			__func__, pkt->type);
-		return 0;
-	}
-
-	if (check_for_packet_payload(inst, pkt, __func__)) {
-		rc = handle_property_with_payload(inst, pkt, port);
-		if (rc)
-			return rc;
-	} else {
-		rc = handle_property_without_payload(inst, pkt, port);
-		if (rc)
-			return rc;
 	}
 
 	return rc;
@@ -1856,7 +1566,7 @@ static int handle_image_version_property(struct msm_vidc_core *core,
 }
 
 static int handle_system_property(struct msm_vidc_core *core,
-				  struct hfi_packet *pkt)
+	struct hfi_packet *pkt)
 {
 	int rc = 0;
 
@@ -1872,8 +1582,8 @@ static int handle_system_property(struct msm_vidc_core *core,
 	return rc;
 }
 
-int handle_system_response(struct msm_vidc_core *core,
-				  struct hfi_header *hdr)
+static int handle_system_response(struct msm_vidc_core *core,
+	struct hfi_header *hdr)
 {
 	int rc = 0;
 	struct hfi_packet *packet;
@@ -1919,7 +1629,7 @@ exit:
 }
 
 static int __handle_session_response(struct msm_vidc_inst *inst,
-				     struct hfi_header *hdr)
+	struct hfi_header *hdr)
 {
 	int rc = 0;
 	struct hfi_packet *packet;
@@ -1949,7 +1659,7 @@ static int __handle_session_response(struct msm_vidc_inst *inst,
 				dequeue |= (packet->type == HFI_CMD_BUFFER);
 				rc = be[i].handle(inst, packet);
 				if (rc)
-					msm_vidc_change_state(inst, MSM_VIDC_ERROR, __func__);
+					msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
 			}
 			pkt += packet->size;
 		}
@@ -1965,35 +1675,253 @@ static int __handle_session_response(struct msm_vidc_inst *inst,
 	return rc;
 }
 
-int handle_session_response(struct msm_vidc_inst *inst,
-				   struct hfi_header *hdr)
+int handle_session_response_work(struct msm_vidc_inst *inst,
+		struct response_work *resp_work)
 {
+	int rc = 0;
+	struct hfi_header *hdr = NULL;
+
+	if (!inst || !inst->core || !resp_work) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
+
+	hdr = (struct hfi_header *)resp_work->data;
+	if (!hdr) {
+		i_vpr_e(inst, "%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
+	if (resp_work->type == RESP_WORK_INPUT_PSC)
+		msm_vdec_init_input_subcr_params(inst);
+
+	rc = __handle_session_response(inst, hdr);
+	if (rc)
+		return rc;
+
+	return 0;
+}
+
+void handle_session_response_work_handler(struct work_struct *work)
+{
+	int rc = 0;
+	struct msm_vidc_inst *inst;
+	struct response_work *resp_work, *dummy = NULL;
+
+	inst = container_of(work, struct msm_vidc_inst, response_work.work);
+	inst = get_inst_ref(g_core, inst);
+	if (!inst) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return;
+	}
+
+	inst_lock(inst, __func__);
+	list_for_each_entry_safe(resp_work, dummy, &inst->response_works, list) {
+		switch (resp_work->type) {
+		case RESP_WORK_INPUT_PSC:
+		{
+			enum msm_vidc_allow allow = MSM_VIDC_DISALLOW;
+
+			allow = msm_vidc_allow_input_psc(inst);
+			if (allow == MSM_VIDC_DISALLOW) {
+				msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
+				break;
+			} else if (allow == MSM_VIDC_DEFER) {
+				/* continue to next entry processing */
+				continue;
+			} else if (allow == MSM_VIDC_DISCARD) {
+				/* if ipsc is discarded then override the psc properties again */
+				inst->ipsc_properties_set = false;
+				inst->psc_or_last_flag_discarded = true;
+				i_vpr_e(inst, "%s: ipsc discarded. state %s\n",
+					__func__, state_name(inst->state));
+				/* discard current entry processing */
+				break;
+			} else if (allow == MSM_VIDC_ALLOW) {
+				rc = handle_session_response_work(inst, resp_work);
+				if (!rc)
+					rc = msm_vidc_state_change_input_psc(inst);
+				/* either handle input psc or state change failed */
+				if (rc)
+					msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
+			}
+			break;
+		}
+		case RESP_WORK_OUTPUT_PSC:
+			rc = handle_session_response_work(inst, resp_work);
+			if (rc)
+				msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
+			break;
+		case RESP_WORK_LAST_FLAG:
+			rc = handle_session_response_work(inst, resp_work);
+			if (rc) {
+				msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
+				break;
+			}
+			if (msm_vidc_allow_last_flag(inst)) {
+				rc = msm_vidc_state_change_last_flag(inst);
+				if (rc)
+					msm_vidc_change_inst_state(inst, MSM_VIDC_ERROR, __func__);
+			} else {
+				i_vpr_e(inst, "%s: last flag discarded. state %s\n",
+					__func__, state_name(inst->state));
+				inst->psc_or_last_flag_discarded = true;
+			}
+			break;
+		default:
+			i_vpr_e(inst, "%s: invalid response work type %d\n", __func__,
+				resp_work->type);
+			break;
+		}
+		list_del(&resp_work->list);
+		msm_vidc_vmem_free((void **)&resp_work->data);
+		msm_vidc_vmem_free((void **)&resp_work);
+	}
+	inst_unlock(inst, __func__);
+
+	put_inst(inst);
+}
+
+static int queue_response_work(struct msm_vidc_inst *inst,
+	enum response_work_type type, void *hdr, u32 hdr_size)
+{
+	struct response_work *work = NULL;
+	int rc = 0;
+
+	rc = msm_vidc_vmem_alloc(sizeof(struct response_work), (void **)&work, __func__);
+	if (rc)
+		return -ENOMEM;
+	INIT_LIST_HEAD(&work->list);
+	work->type = type;
+	work->data_size = hdr_size;
+	if (msm_vidc_vmem_alloc(hdr_size, (void **)&work->data, "Work data"))
+		return -ENOMEM;
+	memcpy(work->data, hdr, hdr_size);
+	list_add_tail(&work->list, &inst->response_works);
+	queue_delayed_work(inst->response_workq,
+			&inst->response_work, msecs_to_jiffies(0));
+	return 0;
+}
+
+int cancel_response_work(struct msm_vidc_inst *inst)
+{
+	struct response_work *work, *dummy_work = NULL;
+
+	if (!inst) {
+		d_vpr_e("%s: Invalid arguments\n", __func__);
+		return -EINVAL;
+	}
+	cancel_delayed_work(&inst->response_work);
+
+	list_for_each_entry_safe(work, dummy_work, &inst->response_works, list) {
+		list_del(&work->list);
+		msm_vidc_vmem_free((void **)&work->data);
+		msm_vidc_vmem_free((void **)&work);
+	}
+
+	return 0;
+}
+
+int cancel_response_work_sync(struct msm_vidc_inst *inst)
+{
+	if (!inst || !inst->response_workq) {
+		d_vpr_e("%s: Invalid arguments\n", __func__);
+		return -EINVAL;
+	}
+	cancel_delayed_work_sync(&inst->response_work);
+
+	return 0;
+}
+
+static int handle_session_response(struct msm_vidc_core *core,
+	struct hfi_header *hdr)
+{
+	struct msm_vidc_inst *inst;
 	struct hfi_packet *packet;
 	u8 *pkt;
+	enum response_work_type type;
 	int i, rc = 0;
-	bool found_ipsc = false;
+	bool offload = false;
 
-	/* search for cmd settings change pkt */
+	if (!core || !hdr) {
+		d_vpr_e("%s: Invalid params\n", __func__);
+		return -EINVAL;
+	}
+
+	inst = get_inst(core, hdr->session_id);
+	if (!inst) {
+		d_vpr_e("%s: Invalid inst\n", __func__);
+		return -EINVAL;
+	}
+
+	inst_lock(inst, __func__);
+	/* search for special pkt */
 	pkt = (u8 *)((u8 *)hdr + sizeof(struct hfi_header));
 	for (i = 0; i < hdr->num_packets; i++) {
 		packet = (struct hfi_packet *)pkt;
+
 		if (packet->type == HFI_CMD_SETTINGS_CHANGE) {
 			if (packet->port == HFI_PORT_BITSTREAM) {
-				found_ipsc = true;
-				break;
+				offload = true;
+				type = RESP_WORK_INPUT_PSC;
+			} else if (packet->port == HFI_PORT_RAW) {
+				offload = true;
+				type = RESP_WORK_OUTPUT_PSC;
+			}
+		} else if (packet->type == HFI_CMD_BUFFER &&
+			vidc_port_from_hfi(inst, packet->port) ==
+				OUTPUT_PORT) {
+			if (check_last_flag(inst, packet)) {
+				offload = true;
+				type = RESP_WORK_LAST_FLAG;
 			}
 		}
+
+		if (offload)
+			break;
+
 		pkt += packet->size;
 	}
 
-	/* if ipsc packet is found, initialise subsc_params */
-	if (found_ipsc)
-		msm_vdec_init_input_subcr_params(inst);
+	if (offload) {
+		i_vpr_h(inst, "%s: queue response work %#x\n", __func__, type);
+		rc = queue_response_work(inst, type, (void *)hdr, hdr->size);
+		if (rc)
+			i_vpr_e(inst, "%s: Offload response work failed\n", __func__);
+
+		goto exit;
+	}
 
 	rc = __handle_session_response(inst, hdr);
 	if (rc)
 		goto exit;
 
 exit:
+	inst_unlock(inst, __func__);
+	put_inst(inst);
 	return rc;
+}
+
+int handle_response(struct msm_vidc_core *core, void *response)
+{
+	struct hfi_header *hdr;
+	int rc = 0;
+
+	if (!core || !response) {
+		d_vpr_e("%s: invalid params\n", __func__);
+		return -EINVAL;
+	}
+
+	hdr = (struct hfi_header *)response;
+	rc = validate_hdr_packet(core, hdr, __func__);
+	if (rc) {
+		d_vpr_e("%s: hdr pkt validation failed\n", __func__);
+		return handle_system_error(core, NULL);
+	}
+
+	if (!hdr->session_id)
+		return handle_system_response(core, hdr);
+	else
+		return handle_session_response(core, hdr);
+
+	return 0;
 }

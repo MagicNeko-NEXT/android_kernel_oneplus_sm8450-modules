@@ -14,51 +14,43 @@ ddk_headers(
 )
 
 ddk_headers(
-    name = "pineapple_headers",
+    name = "blair_headers",
     hdrs = glob([
-      "driver/platform/pineapple/inc/*.h",
+      "driver/platform/blair/inc/*.h",
     ]),
-    includes = ["driver/platform/pineapple/inc"]
+    includes = ["driver/platform/blair/inc"]
 )
 
 ddk_headers(
-    name = "sun_headers",
+    name = "monaco_headers",
     hdrs = glob([
-      "driver/platform/sun/inc/*.h",
+      "driver/platform/monaco/inc/*.h",
     ]),
-    includes = ["driver/platform/sun/inc"]
+    includes = ["driver/platform/monaco/inc"]
 )
 
 ddk_headers(
-    name = "tuna_headers",
+    name = "pitti_headers",
     hdrs = glob([
-      "driver/platform/tuna/inc/*.h",
+      "driver/platform/blair/inc/*.h",
     ]),
-    includes = ["driver/platform/tuna/inc"]
+    includes = ["driver/platform/blair/inc"]
 )
 
 ddk_headers(
-    name = "kera_headers",
+    name = "vienna_headers",
     hdrs = glob([
-      "driver/platform/kera/inc/*.h",
+      "driver/platform/vienna/inc/*.h",
     ]),
-    includes = ["driver/platform/kera/inc"]
+    includes = ["driver/platform/vienna/inc"]
 )
 
 ddk_headers(
-    name = "iris33_headers",
+    name = "ar50lt_headers",
     hdrs = glob([
-      "driver/variant/iris33/inc/*.h",
+      "driver/variant/ar50lt/inc/*.h",
     ]),
-    includes = ["driver/variant/iris33/inc"]
-)
-
-ddk_headers(
-    name = "iris35_headers",
-    hdrs = glob([
-      "driver/variant/iris35/inc/*.h",
-    ]),
-    includes = ["driver/variant/iris35/inc"]
+    includes = ["driver/variant/ar50lt/inc"]
 )
 
 ddk_headers(
@@ -68,12 +60,12 @@ ddk_headers(
       "driver/variant/common/inc/*.h",
       "driver/platform/common/inc/*.h"
     ]),
-    includes = ["driver/vidc/inc", "driver/variant/common/inc", "driver/platform/common/inc"]
+    includes = ["driver/vidc/inc", "driver/platform/common/inc"]
 )
 
 ddk_headers(
     name = "video_driver_headers",
-    hdrs = [":uapi_headers", "pineapple_headers", "sun_headers", "tuna_headers", "kera_headers", "iris33_headers", "iris35_headers", "vidc_headers"]
+    hdrs = [":uapi_headers", "blair_headers", "monaco_headers", "vienna_headers", "ar50lt_headers", "vidc_headers"]
 )
 
 load(":target.bzl", "define_target_modules")

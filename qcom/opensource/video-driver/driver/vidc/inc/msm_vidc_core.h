@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _MSM_VIDC_CORE_H_
@@ -10,20 +10,21 @@
 #include <linux/platform_device.h>
 
 #include "msm_vidc_internal.h"
-#include "msm_vidc_state.h"
-#include "venus_hfi_queue.h"
-#include "resources.h"
 
 struct msm_vidc_core;
-
-#define MAX_EVENTS   30
+struct msm_vidc_inst;
+enum msm_vidc_buffer_type;
 
 #define call_venus_op(d, op, ...)			\
 	(((d) && (d)->venus_ops && (d)->venus_ops->op) ? \
-	((d)->venus_ops->op(__VA_ARGS__)) : 0)
+	((d)->venus_ops->op(__VA_ARGS__)):0)
 
 struct msm_vidc_venus_ops {
 	int (*boot_firmware)(struct msm_vidc_core *core);
+	int (*reset_ahb2axi_bridge)(struct msm_vidc_core *core);
+	int (*clock_config_on_enable)(struct msm_vidc_core *core);
+	int (*interrupt_init)(struct msm_vidc_core *core);
+	int (*setup_ucregion_memmap)(struct msm_vidc_core *core);
 	int (*raise_interrupt)(struct msm_vidc_core *core);
 	int (*clear_interrupt)(struct msm_vidc_core *core);
 	int (*prepare_pc)(struct msm_vidc_core *core);
@@ -31,21 +32,14 @@ struct msm_vidc_venus_ops {
 	int (*power_off)(struct msm_vidc_core *core);
 	int (*watchdog)(struct msm_vidc_core *core, u32 intr_status);
 	int (*noc_error_info)(struct msm_vidc_core *core);
-	int (*switch_gdsc_mode)(struct msm_vidc_core *core, bool sw_mode);
-};
-
-struct msm_vidc_synx_fence_data {
-	u32                             client_id;
-	void                           *session;
-	u32                             client_flags; /* not used */
-	struct msm_vidc_mem             queue;
 };
 
 struct msm_vidc_mem_addr {
 	u32 align_device_addr;
 	u8 *align_virtual_addr;
 	u32 mem_size;
-	struct msm_vidc_mem mem;
+	struct msm_vidc_map   map;
+	struct msm_vidc_alloc alloc;
 };
 
 struct msm_vidc_iface_q_info {
@@ -56,7 +50,6 @@ struct msm_vidc_iface_q_info {
 struct msm_video_device {
 	enum msm_vidc_domain_type              type;
 	struct video_device                    vdev;
-	struct v4l2_m2m_dev                   *m2m_dev;
 };
 
 struct msm_vidc_core_power {
@@ -65,37 +58,42 @@ struct msm_vidc_core_power {
 	u64 bw_llcc;
 };
 
+enum msm_vidc_core_state {
+	MSM_VIDC_CORE_DEINIT       = 0,
+	MSM_VIDC_CORE_INIT_WAIT    = 1,
+	MSM_VIDC_CORE_INIT         = 2,
+};
+
+struct msm_vidc_platform_ops {
+	u32 (*buffer_region)(struct msm_vidc_inst *inst,
+		enum msm_vidc_buffer_type buffer_type, const char *func);
+};
+
 struct msm_vidc_core {
 	struct platform_device                *pdev;
 	struct msm_video_device                vdev[2];
 	struct v4l2_device                     v4l2_dev;
-	struct media_device                    media_dev;
 	struct list_head                       instances;
 	struct list_head                       dangling_instances;
 	struct dentry                         *debugfs_parent;
 	struct dentry                         *debugfs_root;
 	char                                   fw_version[MAX_NAME_LENGTH];
 	enum msm_vidc_core_state               state;
-	int                                  (*state_handle)(struct msm_vidc_core *core,
-							     enum msm_vidc_core_event_type type,
-							     struct msm_vidc_event_data *data);
-	enum msm_vidc_core_sub_state           sub_state;
-	char                                   sub_state_name[MAX_NAME_LENGTH];
 	struct mutex                           lock;
+	struct msm_vidc_dt                    *dt;
 	struct msm_vidc_platform              *platform;
+	struct msm_vidc_platform_ops          *platform_ops;
+	u8 __iomem                            *register_base_addr;
 	u32                                    intr_status;
 	u32                                    spur_count;
 	u32                                    reg_count;
-	u32                                    enc_codecs_count;
-	u32                                    dec_codecs_count;
-	struct msm_vidc_core_capability        capabilities[CORE_CAP_MAX + 1];
+	bool                                   power_enabled;
+	bool                                   is_non_coherent;
+	u32                                    codecs_count;
+	struct msm_vidc_core_capability       *capabilities;
 	struct msm_vidc_inst_capability       *inst_caps;
 	struct msm_vidc_mem_addr               sfr;
 	struct msm_vidc_mem_addr               iface_q_table;
-	struct msm_vidc_mem_addr               mmap_buf;
-	struct msm_vidc_mem_addr               aon_reg;
-	struct msm_vidc_mem_addr               fence_reg;
-	struct msm_vidc_mem_addr               qtimer_reg;
 	struct msm_vidc_iface_q_info           iface_queues[VIDC_IFACEQ_NUMQ];
 	struct delayed_work                    pm_work;
 	struct workqueue_struct               *pm_workq;
@@ -104,8 +102,7 @@ struct msm_vidc_core {
 	struct work_struct                     ssr_work;
 	struct msm_vidc_core_power             power;
 	struct msm_vidc_ssr                    ssr;
-	bool                                   debug_enable_crc;
-	u32                                    hfi_debug_config;
+	bool                                   smmu_fault_handled;
 	u32                                    skip_pc_count;
 	u32                                    last_packet_type;
 	u8                                    *packet;
@@ -117,39 +114,15 @@ struct msm_vidc_core {
 	struct v4l2_ctrl_ops                  *v4l2_ctrl_ops;
 	struct vb2_ops                        *vb2_ops;
 	struct vb2_mem_ops                    *vb2_mem_ops;
-	struct v4l2_m2m_ops                   *v4l2_m2m_ops;
 	struct msm_vidc_venus_ops             *venus_ops;
-	const struct msm_vidc_resources_ops   *res_ops;
 	struct msm_vidc_session_ops           *session_ops;
-	const struct msm_vidc_memory_ops      *mem_ops;
-	struct media_device_ops               *media_device_ops;
-	const struct msm_vidc_fence_ops       *fence_ops;
+	struct msm_vidc_memory_ops            *mem_ops;
 	u32                                    header_id;
 	u32                                    packet_id;
-	u32                                    sys_init_id;
-	struct msm_vidc_synx_fence_data        synx_fence_data;
-	u32                                    irq;
-	u8 __iomem                            *register_base_addr;
-	int                                    fw_cookie;
-	bool                                   is_subcache_set_to_fw;
-	struct bus_info                       *bus_tbl;
-	u32                                    bus_tbl_count;
-	struct clock_info                     *clock_tbl;
-	u32                                    clock_tbl_count;
-	struct reset_info                     *reset_tbl;
-	u32                                    reset_tbl_count;
-	struct subcache_info                  *subcache_tbl;
-	u32                                    subcache_tbl_count;
-	struct regulator_info                 *regulator_tbl;
-	u32                                    regulator_tbl_count;
-	struct power_domain_info              *power_domain_tbl;
-	u32                                    power_domain_tbl_count;
-	struct context_bank_info              *context_bank_tbl;
-	u32                                    context_bank_tbl_count;
-	struct device_region_info             *device_region_tbl;
-	u32                                    device_region_tbl_count;
-	struct frequency_table                *freq_tbl;
-	u32                                    freq_tbl_count;
+	struct completion                      init_done;
+	bool                                   handoff_done;
+	bool                                   hw_power_control;
+	bool                                   pm_suspended;
 };
 
 #endif // _MSM_VIDC_CORE_H_

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _MSM_VIDC_POWER_H_
@@ -15,7 +15,6 @@
 #define COMPRESSION_RATIO_MAX 5
 
 /* TODO: Move to dtsi OR use source clock instead of branch clock.*/
-#define MSM_VIDC_CLOCK_SOURCE_SCALING_RATIO 3
 
 enum vidc_bus_type {
 	PERF,
@@ -199,7 +198,7 @@ static struct lut {
 	},
 };
 
-static inline u32 get_type_frm_name(const char *name)
+static inline u32 get_type_frm_name(const char* name)
 {
 	if (!strcmp(name, "venus-llcc"))
 		return LLCC;
@@ -213,13 +212,13 @@ static inline u32 get_type_frm_name(const char *name)
 #define DUMP_FP_FMT "%FP" /* special format for fp_t */
 
 struct dump {
-	char *key;
-	char *format;
+	char* key;
+	char* format;
 	size_t val;
 };
 
-struct lut const *__lut(int width, int height, int fps);
-fp_t __compression_ratio(struct lut const *entry, int bpp);
+struct lut const* __lut(int width, int height, int fps);
+fp_t __compression_ratio(struct lut const* entry, int bpp);
 void __dump(struct dump dump[], int len);
 
 static inline bool __ubwc(enum msm_vidc_colorformat_type f)
@@ -250,10 +249,9 @@ static inline int __bpp(enum msm_vidc_colorformat_type f)
 	}
 }
 
-u64 msm_vidc_max_freq(struct msm_vidc_inst *inst);
+u64 msm_vidc_max_freq(struct msm_vidc_inst* inst);
+int msm_vidc_get_inst_load(struct msm_vidc_inst *inst);
+int msm_vidc_get_mbps(struct msm_vidc_inst *inst);
 int msm_vidc_scale_power(struct msm_vidc_inst *inst, bool scale_buses);
-int msm_vidc_scale_clocks(struct msm_vidc_inst *inst);
-int msm_vidc_scale_buses(struct msm_vidc_inst *inst);
 void msm_vidc_power_data_reset(struct msm_vidc_inst *inst);
-
 #endif
